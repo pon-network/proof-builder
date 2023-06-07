@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
@@ -26,16 +27,17 @@ import (
 	"github.com/ethereum/go-ethereum/miner"
 
 	beaconTypes "github.com/bsn-eng/pon-golang-types/beaconclient"
+	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
+	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 	"github.com/ethereum/go-ethereum/builder/bls"
-	builderTypes "github.com/ethereum/go-ethereum/builder/types"
+	bbTypes "github.com/ethereum/go-ethereum/builder/types"
 	"github.com/ethereum/go-ethereum/crypto"
 
+	rpbsTypes "github.com/bsn-eng/pon-golang-types/rpbs"
 	beacon "github.com/ethereum/go-ethereum/builder/beacon"
 	"github.com/ethereum/go-ethereum/builder/database"
 	RPBS "github.com/ethereum/go-ethereum/builder/rpbsService"
 )
-
-var executionPayloadCache = make(map[uint64]engine.ExecutableData)
 
 type Builder struct {
 	relay                IRelay
@@ -44,8 +46,8 @@ type Builder struct {
 	rpbs                 *RPBS.RPBSService
 	db                   *database.DatabaseService
 	builderSecretKey     *bls.SecretKey
-	builderPublicKey     builderTypes.PublicKey
-	builderSigningDomain builderTypes.Domain
+	builderPublicKey     commonTypes.PublicKey
+	builderSigningDomain bbTypes.Domain
 
 	builderWalletPrivateKey *ecdsa.PrivateKey
 	builderWalletAddress    common.Address
@@ -59,11 +61,13 @@ type Builder struct {
 	slotAttrs     []builderTypes.BuilderPayloadAttributes
 	slotCtx       context.Context
 	slotCtxCancel context.CancelFunc
+
+	executionPayloadCache map[uint64]engine.ExecutableData
 }
 
-func NewBuilder(sk *bls.SecretKey, beaconClient *beacon.MultiBeaconClient, relay IRelay, builderSigningDomain builderTypes.Domain, eth IEthService, rpbs *RPBS.RPBSService, database *database.DatabaseService, config *Config) (*Builder, error) {
+func NewBuilder(sk *bls.SecretKey, beaconClient *beacon.MultiBeaconClient, relay IRelay, builderSigningDomain bbTypes.Domain, eth IEthService, rpbs *RPBS.RPBSService, database *database.DatabaseService, config *Config) (*Builder, error) {
 	pkBytes := bls.PublicKeyFromSecretKey(sk).Compress()
-	pk := builderTypes.PublicKey{}
+	pk := commonTypes.PublicKey{}
 	err := pk.FromSlice(pkBytes)
 	if err != nil {
 		return nil, err
@@ -89,6 +93,8 @@ func NewBuilder(sk *bls.SecretKey, beaconClient *beacon.MultiBeaconClient, relay
 		slot:          0,
 		slotCtx:       slotCtx,
 		slotCtxCancel: slotCtxCancel,
+
+		executionPayloadCache: make(map[uint64]engine.ExecutableData),
 	}, nil
 }
 
@@ -115,7 +121,7 @@ func (b *Builder) OnPrivateTransactions(transactionBytes *builderTypes.PrivateTr
 
 }
 
-func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, sealedAt time.Time, payoutPoolTx []byte, proposerPubkey builderTypes.PublicKey, attrs *builderTypes.BuilderPayloadAttributes) (builderTypes.BuilderBlockBid, error) {
+func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, sealedAt time.Time, payoutPoolTx []byte, proposerPubkey commonTypes.PublicKey, attrs *builderTypes.BuilderPayloadAttributes) (builderTypes.BuilderBlockBid, error) {
 	executionPayloadEnvlope := engine.BlockToExecutableData(block, big.NewInt(0))
 	executableData := executionPayloadEnvlope.ExecutionPayload
 	block, err := engine.ExecutableDataToBlock(*executableData)
@@ -136,12 +142,28 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, sealedA
 		return builderTypes.BuilderBlockBid{}, err
 	}
 
-	rpbsSig, err := b.rpbs.RPBSCommitToSignature(
-		RPBS.RpbsCommitMessage{
+	// Verify the last tx is the payout pool tx by checking the bytes are the same
+	last_tx := executableData.Transactions[len(executableData.Transactions)-1]
+	if !bytes.Equal(last_tx, payoutPoolTx) {
+		log.Error("last tx is not the payout pool tx")
+		return builderTypes.BuilderBlockBid{}, err
+	}
+
+	// Transactions are all the transactions in the block except the payout pool tx (last tx)
+	transactions := executableData.Transactions[:len(executableData.Transactions)-1]
+	transactions_jsonString, err := json.Marshal(transactions)
+	if err != nil {
+		log.Error("could not convert transactions to string", "err", err)
+		return builderTypes.BuilderBlockBid{}, err
+	}
+
+	rpbsSig, err := b.rpbs.RpbsSignatureGeneration(
+		rpbsTypes.RPBSCommitMessage{
 			Slot:                 attrs.Slot,
 			Amount:               attrs.BidAmount,
 			BuilderWalletAddress: b.builderWalletAddress.String(),
-			TxBytes:              string(payoutpoolTx_jsonString),
+			PayoutTxBytes:        string(payoutpoolTx_jsonString),
+			TxBytes:              string(transactions_jsonString),
 		},
 	)
 
@@ -215,16 +237,16 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, sealedA
 
 	blockBidMsg := builderTypes.BidPayload{
 		Slot:                 attrs.Slot,
-		ParentHash:           builderTypes.Hash(executionPayloadHeader.ParentHash),
-		BlockHash:            builderTypes.Hash(block.Hash()),
+		ParentHash:           commonTypes.Hash(executionPayloadHeader.ParentHash),
+		BlockHash:            commonTypes.Hash(block.Hash()),
 		BuilderPubkey:        b.builderPublicKey,
 		ProposerPubkey:       proposerPubkey,
-		ProposerFeeRecipient: builderTypes.Address(attrs.SuggestedFeeRecipient),
+		ProposerFeeRecipient: commonTypes.Address(attrs.SuggestedFeeRecipient),
 		GasLimit:             executableData.GasLimit,
 		GasUsed:              executableData.GasUsed,
 		Value:                attrs.BidAmount,
 
-		BuilderWalletAddress:   builderTypes.Address(b.builderWalletAddress),
+		BuilderWalletAddress:   commonTypes.Address(b.builderWalletAddress),
 		PayoutPoolTransaction:  payoutPoolTx,
 		ExecutionPayloadHeader: &capellaExecutionPayloadHeader,
 		Endpoint:               b.AccessPoint + _PathSubmitBlindedBlock,
@@ -232,7 +254,7 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, sealedA
 		RPBSPubkey:             rpbsPubkey,
 	}
 
-	signature, err := builderTypes.SignMessage(&blockBidMsg, b.builderSigningDomain, b.builderSecretKey)
+	signature, err := bbTypes.SignMessage(&blockBidMsg, b.builderSigningDomain, b.builderSecretKey)
 	if err != nil {
 		log.Error("could not sign builder bid", "err", err)
 		return builderTypes.BuilderBlockBid{}, err
@@ -247,7 +269,7 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, sealedA
 	blockSubmitReq := builderTypes.BuilderBlockBid{
 		Signature:      signature,
 		Message:        &blockBidMsg,
-		EcdsaSignature: builderTypes.EcdsaSignature(ecdsa_signature),
+		EcdsaSignature: commonTypes.EcdsaSignature(ecdsa_signature),
 	}
 
 	// Submit the block bid to the relay
@@ -264,7 +286,9 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, sealedA
 	}
 
 	log.Info("Submitted block", "slot", blockBidMsg.Slot, "value", blockBidMsg.Value, "parent", blockBidMsg.ParentHash, "response", submissionResp_string)
-	executionPayloadCache[attrs.Slot] = *executableData
+	b.slotMu.Lock()
+	b.executionPayloadCache[attrs.Slot] = *executableData
+	b.slotMu.Unlock()
 
 	log.Info("Executable data cached", "slot", attrs.Slot, "hash", executableData.BlockHash, "parentHash", executableData.ParentHash, "gasUsed", executableData.GasUsed, "transaction count", len(executableData.Transactions), "withdrawals count", len(executableData.Withdrawals))
 
@@ -308,7 +332,9 @@ func (b *Builder) ProcessBuilderBid(attrs *builderTypes.BuilderPayloadAttributes
 		return res, errors.New("backend not Synced")
 	}
 
+	b.beacon.BeaconData.Mu.Lock()
 	currentSlot := b.beacon.BeaconData.CurrentSlot
+	b.beacon.BeaconData.Mu.Unlock()
 
 	// If attrs.Slot is not the next slot, return
 	if attrs.Slot <= currentSlot && attrs.Slot != 0 {
@@ -345,7 +371,7 @@ func (b *Builder) ProcessBuilderBid(attrs *builderTypes.BuilderPayloadAttributes
 
 	attrs.Withdrawals = withdrawal_list
 
-	proposerPubkey, err := builderTypes.HexToPubkey(string(vd.PubkeyHex))
+	proposerPubkey, err := commonTypes.HexToPubkey(string(vd.PubkeyHex))
 	if err != nil {
 		log.Error("could not parse pubkey", "err", err, "pubkey", vd.PubkeyHex)
 		return res, err
@@ -373,40 +399,42 @@ func (b *Builder) ProcessBuilderBid(attrs *builderTypes.BuilderPayloadAttributes
 	}
 
 	if attrs.Timestamp == 0 {
-		attrs.Timestamp = hexutil.Uint64(builderTypes.GENESIS_TIME + (attrs.Slot)*builderTypes.SLOT_DURATION)
-		log.Info("timestamp not provided, creating timestamp", "timestamp", builderTypes.GENESIS_TIME+(attrs.Slot)*builderTypes.SLOT_DURATION, "slot", attrs.Slot)
-	} else if attrs.Timestamp != hexutil.Uint64(builderTypes.GENESIS_TIME+attrs.Slot*builderTypes.SLOT_DURATION) {
+		attrs.Timestamp = hexutil.Uint64(bbTypes.GENESIS_TIME + (attrs.Slot)*bbTypes.SLOT_DURATION)
+		log.Info("timestamp not provided, creating timestamp", "timestamp", bbTypes.GENESIS_TIME+(attrs.Slot)*bbTypes.SLOT_DURATION, "slot", attrs.Slot)
+	} else if attrs.Timestamp != hexutil.Uint64(bbTypes.GENESIS_TIME+attrs.Slot*bbTypes.SLOT_DURATION) {
 		log.Error("timestamp not correct", "timestamp", attrs.Timestamp, "slot", attrs.Slot)
 		return res, errors.New("timestamp " + strconv.Itoa(int(attrs.Timestamp)) + " not correct, slot is " + strconv.Itoa(int(attrs.Slot)))
 	}
 
 	b.slotMu.Lock()
 
-	// Check if we are in a new slot
+	// Check if we are submitting for a new slot
 	if b.slot != attrs.Slot {
 		if b.slotCtxCancel != nil {
 			b.slotCtxCancel()
 		}
 
-		log.Info("New slot", "slot", attrs.Slot, "current slot", currentSlot, "next available slot for bid", currentSlot+1)
+		log.Info("New slot", "slot being bid for", attrs.Slot, "current slot", currentSlot)
 
 		// Attributes contains the block timestamp. Check this against the current time to know how long we have to put a bid.
 
+		// Update time for bids
 		timeForBids := time.Until(time.Unix(int64(attrs.Timestamp+2), 0))
 
 		slotCtx, slotCtxCancel := context.WithTimeout(context.Background(), timeForBids)
 		b.slot = attrs.Slot
-		b.slotAttrs = nil
+		b.slotAttrs = []builderTypes.BuilderPayloadAttributes{}
 		b.slotCtx = slotCtx
 		b.slotCtxCancel = slotCtxCancel
 
-		// Check if execution payload cache has any old slots
-		for slot := range executionPayloadCache {
+		// Check if execution payload cache has any old slots since we are in a new slot bid
+		for slot := range b.executionPayloadCache {
 			if slot < currentSlot-32 { // Delete any slots that are 32 slots behind the current slot
-				delete(executionPayloadCache, slot)
+				delete(b.executionPayloadCache, slot)
 			}
 		}
-	}
+	}// Else block bid submission is for the same slot as known
+	
 
 	log.Info("Received block attributes", "slot", attrs.Slot, "timestamp", attrs.Timestamp, "head hash", attrs.HeadHash, "fee recipient", attrs.SuggestedFeeRecipient, "bid amount", attrs.BidAmount)
 
@@ -418,23 +446,30 @@ func (b *Builder) ProcessBuilderBid(attrs *builderTypes.BuilderPayloadAttributes
 			log.Info("Received duplicate block attributes", "slot", attrs.Slot, "timestamp", attrs.Timestamp, "head hash", attrs.HeadHash, "fee recipient", attrs.SuggestedFeeRecipient, "bid amount", attrs.BidAmount)
 			b.slotMu.Unlock()
 			return res, errors.New("duplicate block attributes for slot " + strconv.Itoa(int(attrs.Slot)))
+			// Since time for bids is updated when a new slot is received, it would persist after a duplicate block bid is received
 		}
 	}
 
-	// User is requesting to send a new block bid for this slot, cancel the previous context and create a new one
+	// User is requesting to send a new block bid for this slot with new bid attributes
+	// cancel the previous context and create a new one
 	if b.slotCtxCancel != nil {
 		b.slotCtxCancel()
 	}
 
+	// Update time for bids just incase, based on the new block bid attributes, which may have a different timestamp
 	timeForBids := time.Until(time.Unix(int64(attrs.Timestamp+2), 0))
-
 	slotCtx, slotCtxCancel := context.WithTimeout(context.Background(), timeForBids)
 	b.slotCtx = slotCtx
 	b.slotCtxCancel = slotCtxCancel
 
+	// Add the new block bid attributes to the list of block bid attributes for this slot
 	b.slotAttrs = append(b.slotAttrs, *attrs)
 	// Can be used later to keep track of the different bids for the same slot by the same user
+
+
 	b.slotMu.Unlock()
+
+
 	attrs.PayoutPoolAddress = b.relay.GetPayoutAddress()
 
 	if attrs.GasLimit <= 0 {
@@ -458,7 +493,7 @@ type blockQueueEntry struct {
 	blockValue          *big.Int
 }
 
-func (b *Builder) prepareBlock(slotCtx context.Context, proposerPubkey builderTypes.PublicKey, attrs *builderTypes.BuilderPayloadAttributes) (builderTypes.BuilderBlockBid, error) {
+func (b *Builder) prepareBlock(slotCtx context.Context, proposerPubkey commonTypes.PublicKey, attrs *builderTypes.BuilderPayloadAttributes) (builderTypes.BuilderBlockBid, error) {
 	// Attributes contains the block timestamp. Check this against the current time to know how long we have to build the block.
 	// We need to build the block before the timestamp, otherwise the block will be invalid.
 	log.Info("block builder run building job", "slot", attrs.Slot, "timestamp", attrs.Timestamp, "head hash", attrs.HeadHash, "fee recipient", attrs.SuggestedFeeRecipient, "bid amount", attrs.BidAmount)
@@ -569,6 +604,13 @@ func (b *Builder) prepareBlock(slotCtx context.Context, proposerPubkey builderTy
 		if queueBestEntry.blockValue == nil {
 			executionPayloadEnvelope := engine.BlockToExecutableData(block, fees)
 
+			// check the length of transaction list is greater than 1, since the payout pool transaction counts as one
+			// Handles the case where geth is still preparing the mempool after syncing
+			if len(executionPayloadEnvelope.ExecutionPayload.Transactions) < 2 {
+				log.Error("block builder error", "err", "no transactions in block aside from payout pool transaction. Ignoring block")
+				return
+			}
+
 			queueMu.Lock()
 			queueBestEntry = blockQueueEntry{
 				block:               block,
@@ -592,6 +634,12 @@ func (b *Builder) prepareBlock(slotCtx context.Context, proposerPubkey builderTy
 			// This is a workaround for a bug in geth, where sometimes builds a block with 0 gasUsed, or builds a block with different
 			// logs and extraData than the previous but with the same gasUsed
 			executionPayloadEnvelope := engine.BlockToExecutableData(block, fees)
+
+			// check the length of transaction list is greater than 1, since the payout pool transaction counts as one
+			if len(executionPayloadEnvelope.ExecutionPayload.Transactions) < 2 {
+				log.Error("block builder error", "err", "no transactions in block aside from payout pool transaction. Ignoring block")
+				return
+			}
 
 			queueMu.Lock()
 			queueBestEntry = blockQueueEntry{
@@ -680,12 +728,20 @@ func (b *Builder) SubmitBlindedBlock(blindedBlock capellaApi.BlindedBeaconBlock,
 
 	slot := uint64(blindedBlock.Slot)
 
-	executableData, exists := executionPayloadCache[slot]
+	b.slotMu.Lock()
+	executableData, exists := b.executionPayloadCache[slot]
+	b.slotMu.Unlock()
+
 	if !exists {
 		return capella.ExecutionPayload{}, errors.New("execution payload not found")
 	}
 
 	log.Info("executionPayload found", "slot", slot, "hash", executableData.BlockHash.String())
+
+	// If execution payload is found and block building for second submission is still in progress, cancel it
+	if b.slotCtxCancel != nil {
+		b.slotCtxCancel()
+	}
 
 	// Block hash is unique to the block, so we can use it to verify that the block has not been modified
 	if blindedBlock.Body.ExecutionPayloadHeader.BlockHash.String() != executableData.BlockHash.String() {

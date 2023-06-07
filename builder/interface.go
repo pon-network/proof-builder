@@ -11,7 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	builderTypes "github.com/ethereum/go-ethereum/builder/types"
+	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
 	"github.com/ethereum/go-ethereum/miner"
 )
 

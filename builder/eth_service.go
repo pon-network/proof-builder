@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	builderTypes "github.com/ethereum/go-ethereum/builder/types"
+	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"

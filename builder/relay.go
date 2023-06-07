@@ -12,8 +12,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-
-	builderTypes "github.com/ethereum/go-ethereum/builder/types"
+	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
 )
 
 var ErrValidatorNotFound = errors.New("validator not found")
@@ -60,19 +59,6 @@ func NewRelay(endpoint string) (*Relay, error) {
 	}
 
 	return r, nil
-}
-
-type GetValidatorRelayResponse []struct {
-	Slot  uint64 `json:"slot,string"`
-	Entry struct {
-		Message struct {
-			FeeRecipient string `json:"fee_recipient"`
-			GasLimit     uint64 `json:"gas_limit,string"`
-			Timestamp    uint64 `json:"timestamp,string"`
-			Pubkey       string `json:"pubkey"`
-		} `json:"message"`
-		Signature string `json:"signature"`
-	} `json:"entry"`
 }
 
 func (r *Relay) SubmitBlockBid(msg *builderTypes.BuilderBlockBid) (interface{}, error) {

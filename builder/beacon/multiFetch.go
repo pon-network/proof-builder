@@ -107,7 +107,9 @@ func (b *MultiBeaconClient) Randao(slot uint64) (randao *common.Hash, err error)
 		Clients are attempted by best performance first.
 		Performance is also updated in defer function (triggers background update).
 	*/
+	b.BeaconData.Mu.Lock()
 	knownRandao, found := b.BeaconData.RandaoMap[slot]
+	b.BeaconData.Mu.Unlock()
 	if found {
 		return &knownRandao, nil
 	}

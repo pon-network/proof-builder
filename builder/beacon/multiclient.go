@@ -124,7 +124,9 @@ func (b *MultiBeaconClient) UpdateValidatorMap() {
 		go func(client BeaconClient) {
 			defer wg.Done()
 
+			b.BeaconData.Mu.Lock()
 			currentSlot := b.BeaconData.CurrentHead.Slot
+			b.BeaconData.Mu.Unlock()
 			currentEpoch := currentSlot / 32
 
 			b.updateValidatorMap(client, currentEpoch)
@@ -212,8 +214,8 @@ func (b *MultiBeaconClient) GetCurrentHead() (beaconTypes.HeadEventData, error) 
 		have heads behind the true head.
 	*/
 	b.BeaconData.Mu.Lock()
-	data := b.BeaconData.CurrentHead
 	defer b.BeaconData.Mu.Unlock()
+	data := b.BeaconData.CurrentHead
 	return data, nil
 }
 

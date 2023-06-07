@@ -15,11 +15,12 @@ import (
 	"github.com/gorilla/mux"
 
 	beacon "github.com/ethereum/go-ethereum/builder/beacon"
+	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 	"github.com/ethereum/go-ethereum/builder/bls"
 	"github.com/ethereum/go-ethereum/builder/database"
 	httplogger "github.com/ethereum/go-ethereum/builder/httplogger"
 	RPBS "github.com/ethereum/go-ethereum/builder/rpbsService"
-	builderTypes "github.com/ethereum/go-ethereum/builder/types"
+	bbTypes "github.com/ethereum/go-ethereum/builder/types"
 )
 
 const (
@@ -116,7 +117,7 @@ func Register(stack *node.Node, backend *eth.Ethereum, cfg *Config) error {
 		"genesisValidatorsRoot", genesisInfo.GenesisValidatorsRoot)
 
 	cfg.GenesisForkVersion = genesisInfo.GenesisForkVersion
-	builderTypes.GENESIS_TIME = genesisInfo.GenesisTime
+	bbTypes.GENESIS_TIME = genesisInfo.GenesisTime
 
 	envBuilderSkBytes, err := hexutil.Decode(cfg.BuilderSecretKey)
 	if err != nil {
@@ -132,7 +133,7 @@ func Register(stack *node.Node, backend *eth.Ethereum, cfg *Config) error {
 	}
 	var genesisForkVersion [4]byte
 	copy(genesisForkVersion[:], genesisForkVersionBytes[:4])
-	builderSigningDomain := builderTypes.ComputeDomain(builderTypes.DomainTypeAppBuilder, genesisForkVersion, builderTypes.Root{})
+	builderSigningDomain := bbTypes.ComputeDomain(bbTypes.DomainTypeAppBuilder, genesisForkVersion, commonTypes.Root{})
 
 	var db *database.DatabaseService = nil
 	if cfg.MetricsEnabled {

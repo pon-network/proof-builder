@@ -1,7 +1,8 @@
-package builderTypes
+package bbTypes
 
 import (
 	"github.com/ethereum/go-ethereum/builder/bls"
+	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 )
 
 type (
@@ -18,24 +19,24 @@ var (
 )
 
 func init() {
-	DomainBuilder = ComputeDomain(DomainTypeAppBuilder, ForkVersion{}, Root{})
+	DomainBuilder = ComputeDomain(DomainTypeAppBuilder, ForkVersion{}, commonTypes.Root{})
 }
 
 type SigningData struct {
-	Root   Root   `ssz-size:"32"`
+	Root   commonTypes.Root   `ssz-size:"32"`
 	Domain Domain `ssz-size:"32"`
 }
 
 type ForkData struct {
 	CurrentVersion        ForkVersion `ssz-size:"4"`
-	GenesisValidatorsRoot Root        `ssz-size:"32"`
+	GenesisValidatorsRoot commonTypes.Root        `ssz-size:"32"`
 }
 
 type HashTreeRoot interface {
 	HashTreeRoot() ([32]byte, error)
 }
 
-func ComputeDomain(dt DomainType, forkVersion ForkVersion, genesisValidatorsRoot Root) [32]byte {
+func ComputeDomain(dt DomainType, forkVersion ForkVersion, genesisValidatorsRoot commonTypes.Root) [32]byte {
 	forkDataRoot, _ := (&ForkData{
 		CurrentVersion:        forkVersion,
 		GenesisValidatorsRoot: genesisValidatorsRoot,
@@ -62,15 +63,15 @@ func ComputeSigningRoot(obj HashTreeRoot, d Domain) ([32]byte, error) {
 	return msg, nil
 }
 
-func SignMessage(obj HashTreeRoot, d Domain, sk *bls.SecretKey) (Signature, error) {
+func SignMessage(obj HashTreeRoot, d Domain, sk *bls.SecretKey) (commonTypes.Signature, error) {
 	root, err := ComputeSigningRoot(obj, d)
 	if err != nil {
-		return Signature{}, err
+		return commonTypes.Signature{}, err
 	}
 
 	signatureBytes := bls.Sign(sk, root[:]).Compress()
 
-	var signature Signature
+	var signature commonTypes.Signature
 	err = signature.FromSlice(signatureBytes)
 	if err != nil {
 		return [96]byte{}, err

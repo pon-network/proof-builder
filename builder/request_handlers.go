@@ -14,7 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 
 	"github.com/ethereum/go-ethereum/builder/database"
-	builderTypes "github.com/ethereum/go-ethereum/builder/types"
+	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
 )
 
 func (b *Builder) handlePrivateTransactions(w http.ResponseWriter, req *http.Request) {

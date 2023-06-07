@@ -8,20 +8,13 @@ import (
 	"net/http"
 
 	"github.com/ethereum/go-ethereum/log"
+
+	rpbsTypes "github.com/bsn-eng/pon-golang-types/rpbs"
 )
 
 type RPBSService struct {
 	Endpoint string
 }
-
-type RpbsCommitMessage struct {
-	BuilderWalletAddress string `json:"builderWalletAddress"`
-	Slot                 uint64 `json:"slot"`
-	Amount               uint64 `json:"amount"`
-	TxBytes              string `json:"txBytes"`
-}
-
-type RpbsSignature map[string]string
 
 func NewRPBSService(endpoint string) *RPBSService {
 	return &RPBSService{
@@ -29,28 +22,26 @@ func NewRPBSService(endpoint string) *RPBSService {
 	}
 }
 
-func (r *RPBSService) RPBSCommitToSignature(commitMsg RpbsCommitMessage) (*RpbsSignature, error) {
+func (r *RPBSService) RpbsSignatureGeneration(commitMsg rpbsTypes.RPBSCommitMessage) (*rpbsTypes.EncodedRPBSSignature, error) {
 
 	url := r.Endpoint + "/generateSignature"
 
-	data := fmt.Sprintf("BuilderWalletAddress: %s, Slot: %d, Amount: %d, Transaction: %s", commitMsg.BuilderWalletAddress, commitMsg.Slot, commitMsg.Amount, commitMsg.TxBytes)
-
-	log.Info("RPBS commit", "url", url, "data", data)
+	data := fmt.Sprintf("BuilderWalletAddress: %s, Slot: %d, Amount: %d, Transaction: %s", commitMsg.BuilderWalletAddress, commitMsg.Slot, commitMsg.Amount, commitMsg.PayoutTxBytes)
 
 	body := map[string]string{
 		"commonInfo": data,
-		"Message":    data,
+		"Message":    commitMsg.TxBytes,
 	}
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		log.Error("RPBS commit error: could not marshal body", "error", err)
+		log.Error("RPBS signature generation error: could not marshal body", "error", err)
 		return nil, err
 	}
 
 	rpbsReq, err := http.NewRequest("POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {
-		log.Error("RPBS commit error: could not create request", "error", err)
+		log.Error("RPBS signature generation error: could not create request", "error", err)
 		return nil, err
 	}
 
@@ -59,7 +50,7 @@ func (r *RPBSService) RPBSCommitToSignature(commitMsg RpbsCommitMessage) (*RpbsS
 
 	resp, err := http.DefaultClient.Do(rpbsReq)
 	if err != nil {
-		log.Error("RPBS commit error: could not send request", "error", err)
+		log.Error("RPBS signature generation error: could not send request", "error", err)
 		return nil, err
 	}
 
@@ -68,19 +59,21 @@ func (r *RPBSService) RPBSCommitToSignature(commitMsg RpbsCommitMessage) (*RpbsS
 	if resp.StatusCode != 200 {
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.Error("RPBS commit error: could not read response body", "error", err)
+			log.Error("RPBS signature generation error: could not read response body", "error", err)
 			return nil, err
 		}
 		log.Error("RPBS commit error: could not commit", "error", string(bodyBytes))
 		return nil, fmt.Errorf("could not commit: %s", string(bodyBytes))
 	}
 
-	var response RpbsSignature
+	var response rpbsTypes.EncodedRPBSSignature
 	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
-		log.Error("RPBS commit error: could not decode response", "error", err)
+		log.Error("RPBS signature generation error: could not decode response", "error", err)
 		return nil, err
 	}
+
+	log.Info("RPBS signature generation success")
 
 	return &response, nil
 }
