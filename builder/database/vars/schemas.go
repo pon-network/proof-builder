@@ -18,9 +18,9 @@ SELECT
 			SELECT COUNT(*) 
 			FROM pragma_table_info('blockbid')
 			WHERE name IN (
-				'id', 'inserted_at', 'signature', 'slot', 'builder_pubkey', 'proposer_pubkey', 'fee_recipient', 'builder_wallet_address', 'gas_used', 'gas_limit', 'mev', 'payout_pool_tx', 'payout_pool_address', 'payout_pool_gas_fee', 'rpbs', 'priority_transactions_count', 'transactions_count', 'block_hash', 'parent_hash', 'block_number', 'value'
+				'id', 'inserted_at', 'signature', 'slot', 'builder_pubkey', 'proposer_pubkey', 'fee_recipient', 'builder_wallet_address', 'gas_used', 'gas_limit', 'mev', 'payout_pool_tx', 'payout_pool_address', 'payout_pool_gas_fee', 'rpbs', 'priority_transactions_count', 'transactions_count', 'block_hash', 'parent_hash', 'block_number', 'relay_response', 'value'
 			)
-		) = 21 THEN NULL
+		) = 22 THEN NULL
 		ELSE 'DROP TABLE IF EXISTS blockbid;'
 	END
 FROM sqlite_master
@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS blockbid (
 	block_hash TEXT NOT NULL,
 	parent_hash TEXT NOT NULL,
 	block_number INTEGER NOT NULL,
+
+	relay_response TEXT NOT NULL,
 
 	value INTEGER NOT NULL
 );

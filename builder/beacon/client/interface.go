@@ -3,6 +3,8 @@ package beaconClient
 import (
 	"context"
 
+	capella "github.com/attestantio/go-eth2-client/spec/capella"
+
 	beaconTypes "github.com/bsn-eng/pon-golang-types/beaconclient"
 	beaconData "github.com/ethereum/go-ethereum/builder/beacon/data"
 	"github.com/ethereum/go-ethereum/common"
@@ -20,7 +22,7 @@ type BeaconClientInstance interface {
 	GetBlockHeader(slot uint64) (*beaconTypes.BlockHeaderData, error)
 
 	// post methods
-	PublishBlock(context.Context, interface{}) error
+	PublishBlock(context.Context, capella.SignedBeaconBlock) error
 
 	// subscription methods
 	SubscribeToHeadEvents(context.Context, chan beaconTypes.HeadEventData)

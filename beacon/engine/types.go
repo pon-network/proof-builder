@@ -207,6 +207,55 @@ func ExecutableDataToBlock(params ExecutableData) (*types.Block, error) {
 	return block, nil
 }
 
+func ExecutableDataToBlockWithRoots(params ExecutableData, withdrawalsRoot *common.Hash) (*types.Block, error) {
+	txs, err := DecodeTransactions(params.Transactions)
+	if err != nil {
+		return nil, err
+	}
+	if len(params.ExtraData) > 32 {
+		return nil, fmt.Errorf("invalid extradata length: %v", len(params.ExtraData))
+	}
+	if len(params.LogsBloom) != 256 {
+		return nil, fmt.Errorf("invalid logsBloom length: %v", len(params.LogsBloom))
+	}
+	// Check that baseFeePerGas is not negative or too big
+	if params.BaseFeePerGas != nil && (params.BaseFeePerGas.Sign() == -1 || params.BaseFeePerGas.BitLen() > 256) {
+		return nil, fmt.Errorf("invalid baseFeePerGas: %v", params.BaseFeePerGas)
+	}
+	// Only set withdrawalsRoot if it is non-nil. This allows CLs to use
+	// ExecutableData before withdrawals are enabled by marshaling
+	// Withdrawals as the json null value.
+	if params.Withdrawals != nil && withdrawalsRoot == nil {
+		h := types.DeriveSha(types.Withdrawals(params.Withdrawals), trie.NewStackTrie(nil))
+		withdrawalsRoot = &h
+	}
+
+	header := &types.Header{
+		ParentHash:      params.ParentHash,
+		UncleHash:       types.EmptyUncleHash,
+		Coinbase:        params.FeeRecipient,
+		Root:            params.StateRoot,
+		TxHash:          types.DeriveSha(types.Transactions(txs), trie.NewStackTrie(nil)),
+		ReceiptHash:     params.ReceiptsRoot,
+		Bloom:           types.BytesToBloom(params.LogsBloom),
+		Difficulty:      common.Big0,
+		Number:          new(big.Int).SetUint64(params.Number),
+		GasLimit:        params.GasLimit,
+		GasUsed:         params.GasUsed,
+		Time:            params.Timestamp,
+		BaseFee:         params.BaseFeePerGas,
+		Extra:           params.ExtraData,
+		MixDigest:       params.Random,
+		WithdrawalsHash: withdrawalsRoot,
+	}
+	block := types.NewBlockWithHeader(header).WithBody(txs, nil /* uncles */).WithWithdrawals(params.Withdrawals)
+	if block.Hash() != params.BlockHash {
+		return nil, fmt.Errorf("blockhash mismatch, want %x, got %x", params.BlockHash, block.Hash())
+	}
+	block.Hash()
+	return block, nil
+}
+
 // BlockToExecutableData constructs the ExecutableData structure by filling the
 // fields from the given block. It assumes the given block is post-merge block.
 func BlockToExecutableData(block *types.Block, fees *big.Int) *ExecutionPayloadEnvelope {

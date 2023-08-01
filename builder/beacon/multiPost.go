@@ -2,16 +2,17 @@ package multibeaconClient
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"time"
-	"database/sql"
 
-	beaconTypes "github.com/bsn-eng/pon-golang-types/beaconclient"
+	capella "github.com/attestantio/go-eth2-client/spec/capella"
+
 	"github.com/ethereum/go-ethereum/builder/database"
 	"github.com/ethereum/go-ethereum/log"
 )
 
-func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block beaconTypes.SignedBeaconBlock, metricsEnabled bool, db *database.DatabaseService) (err error) {
+func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.SignedBeaconBlock, metricsEnabled bool, db *database.DatabaseService) (err error) {
 	/*
 		Post a block to beacon chain using all clients
 		No penalty for multiple submissions
@@ -58,6 +59,8 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block beaconTypes.
 						go db.InsertBeaconBlock(signedBeaconBlock, block.Message.Body.ExecutionPayload.BlockHash.String())
 					}
 
+					log.Info("Failed to submit block to all clients", "err", err)
+
 					return err
 				}
 			}
@@ -65,7 +68,8 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block beaconTypes.
 	}
 }
 
-func publishAsync(ctx context.Context, clientUpdate *sync.Mutex, client BeaconClient, block beaconTypes.SignedBeaconBlock, submissionError chan<- error) {
+func publishAsync(ctx context.Context, clientUpdate *sync.Mutex, client BeaconClient, block capella.SignedBeaconBlock, submissionError chan<- error) {
+
 	err := client.Node.PublishBlock(ctx, block)
 	if err != nil {
 		log.Warn("failed to publish block", "err", err, "endpoint", client.Node.BaseEndpoint())

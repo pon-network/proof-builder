@@ -50,7 +50,6 @@ func NewMultiBeaconClient(beaconUrls []string) (*MultiBeaconClient, error) {
 		SlotProposerMap:          make(beaconData.SlotProposerMap),
 		SlotPayloadAttributesMap: make(beaconData.SlotPayloadAttributesMap),
 		RandaoMap:                make(beaconData.RandaoMap),
-		CloseCh:                  make(chan struct{}),
 		HeadSlotC:                make(chan beaconTypes.HeadEventData),
 		PayloadAttributesC:       make(chan beaconTypes.PayloadAttributesEventData),
 	}}, nil
@@ -73,10 +72,6 @@ func (b *MultiBeaconClient) Start() {
 
 	go b.SubscribeToHeadEvents(context.Background(), b.BeaconData.HeadSlotC)
 	go b.SubscribeToPayloadAttributesEvents(context.Background(), b.BeaconData.PayloadAttributesC)
-}
-
-func (b *MultiBeaconClient) Stop() {
-	close(b.BeaconData.CloseCh)
 }
 
 func (b *MultiBeaconClient) waitSynced() {
@@ -259,9 +254,12 @@ func (b *MultiBeaconClient) GetPayloadAttributesForSlot(requestedSlot uint64) (*
 		if err != nil {
 			return nil, err
 		}
+		if withdrawals == nil {
+			withdrawals = &beaconTypes.Withdrawals{}
+		}
 
 		attrs := beaconTypes.PayloadAttributes{
-			Withdrawals: withdrawals,
+			Withdrawals: *withdrawals,
 			PrevRandao:  previousRandao.String(),
 			// Timestamp not needed
 			// Cannot get suggested fee recipient and not needed
@@ -274,7 +272,7 @@ func (b *MultiBeaconClient) GetPayloadAttributesForSlot(requestedSlot uint64) (*
 			// Parent block number not needed
 			ParentBlockRoot:   parentBlockHeader.Header.Message.StateRoot,
 			ParentBlockHash:   parentBlockHeader.Root,
-			PayloadAttributes: &attrs,
+			PayloadAttributes: attrs,
 		}
 
 		b.BeaconData.Mu.Lock()

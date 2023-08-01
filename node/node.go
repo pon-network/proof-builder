@@ -119,7 +119,7 @@ func New(conf *Config) (*Node, error) {
 	if err := node.openDataDir(); err != nil {
 		return nil, err
 	}
-	keyDir, isEphem, err := getKeyStoreDir(conf)
+	keyDir, isEphem, err := conf.GetKeyStoreDir()
 	if err != nil {
 		return nil, err
 	}
@@ -172,8 +172,10 @@ func (n *Node) Start() error {
 		return ErrNodeStopped
 	}
 	n.state = runningState
+	
 	// open networking and RPC endpoints
 	err := n.openEndpoints()
+
 	lifecycles := make([]Lifecycle, len(n.lifecycles))
 	copy(lifecycles, n.lifecycles)
 	n.lock.Unlock()

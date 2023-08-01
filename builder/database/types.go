@@ -58,6 +58,8 @@ type BuilderBlockBidEntry struct {
 	ParentHash  string `db:"parent_hash"`
 	BlockNumber uint64 `db:"block_number"`
 
+	RelayResponse string `db:"relay_response"`
+
 	Value uint64 `db:"value"`
 }
 

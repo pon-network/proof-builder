@@ -9,9 +9,9 @@ func (s *DatabaseService) InsertBlockBid(blockBid BuilderBlockBidEntry) error {
 	tx := s.DB.MustBegin()
 	_, err := tx.NamedExec(`INSERT INTO blockbid 
 		(inserted_at, slot, builder_pubkey, proposer_pubkey, fee_recipient, builder_wallet_address, signature, gas_used, gas_limit, mev, payout_pool_tx, payout_pool_gas_fee, rpbs,
-			payout_pool_address, priority_transactions_count, transactions_count, block_hash, parent_hash, block_number, value) 
+			payout_pool_address, priority_transactions_count, transactions_count, block_hash, parent_hash, block_number, relay_response, value)
 		VALUES (:inserted_at, :slot, :builder_pubkey, :proposer_pubkey, :fee_recipient, :builder_wallet_address, :signature, :gas_used, :gas_limit, :mev, :payout_pool_tx, :payout_pool_gas_fee, :rpbs,
-			:payout_pool_address, :priority_transactions_count, :transactions_count, :block_hash, :parent_hash, :block_number, :value)`, blockBid)
+			:payout_pool_address, :priority_transactions_count, :transactions_count, :block_hash, :parent_hash, :block_number, :relay_response, :value)`, blockBid)
 	if err != nil {
 		log.Error("Error saving block bid to database", "err", err)
 		return err

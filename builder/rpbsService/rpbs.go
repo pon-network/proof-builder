@@ -3,6 +3,7 @@ package rpbs
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,11 +27,14 @@ func (r *RPBSService) RpbsSignatureGeneration(commitMsg rpbsTypes.RPBSCommitMess
 
 	url := r.Endpoint + "/generateSignature"
 
-	data := fmt.Sprintf("BuilderWalletAddress: %s, Slot: %d, Amount: %d, Transaction: %s", commitMsg.BuilderWalletAddress, commitMsg.Slot, commitMsg.Amount, commitMsg.PayoutTxBytes)
+	data := fmt.Sprintf("BuilderWalletAddress:%s,Slot:%d,Amount:%d,Transaction:%s", commitMsg.BuilderWalletAddress, commitMsg.Slot, commitMsg.Amount, commitMsg.PayoutTxBytes)
+	data = strings.ToLower(data)
+
+	log.Info("RPBS signature generation request", "url", url, "data", data)
 
 	body := map[string]string{
 		"commonInfo": data,
-		"Message":    commitMsg.TxBytes,
+		"Message":    strings.Join(commitMsg.TxBytes, ","),
 	}
 
 	bodyBytes, err := json.Marshal(body)

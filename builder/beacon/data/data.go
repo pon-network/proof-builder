@@ -18,7 +18,6 @@ type BeaconData struct {
 	SlotProposerMap          SlotProposerMap
 	SlotPayloadAttributesMap SlotPayloadAttributesMap
 
-	CloseCh            chan struct{}
 	HeadSlotC          chan beaconTypes.HeadEventData
 	PayloadAttributesC chan beaconTypes.PayloadAttributesEventData
 }

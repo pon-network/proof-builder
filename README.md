@@ -7,13 +7,13 @@ By utilizing the [Official Golang implementation of the Ethereum protocol](https
 The PoN Builder interacts with the mempool to create optimal bundles of transactions in a block template, with the goal of extracting maximum value from each block by default and the option of including additional private transactions. PoN Builder competes with other builders using relays to acquire block space from validators and ensure inclusion of their execution payloads in proposed blocks.
 
 [![PoN Builder](
-https://camo.githubusercontent.com/915b7be44ada53c290eb157634330494ebe3e30a/68747470733a2f2f676f646f632e6f72672f6769746875622e636f6d2f676f6c616e672f6764646f3f7374617475732e737667
+<https://camo.githubusercontent.com/915b7be44ada53c290eb157634330494ebe3e30a/68747470733a2f2f676f646f632e6f72672f6769746875622e636f6d2f676f6c616e672f6764646f3f7374617475732e737667>
 )](https://docs.pon.network/)
 [![PoN Builder Getting Started](
-https://img.shields.io/badge/Documentation-Docusaurus-green)](https://docs.pon.network/pon/bguide)
+<https://img.shields.io/badge/Documentation-Docusaurus-green>)](https://docs.pon.network/pon/bguide)
 
 Automated builds are available for stable releases and the unstable master branch. Binary
-archives are published at https://github.com/pon-pbs/bbBuilder.
+archives are published at <https://github.com/pon-pbs/bbBuilder>.
 
 ## Building the source
 
@@ -54,7 +54,6 @@ Going through all the possible command line flags is out of scope here (please c
 but we've enumerated a few common parameter combos to get you up to speed quickly
 on how you can run your own `geth` instance.
 
-
 ### Hardware Requirements
 
 Minimum:
@@ -71,7 +70,6 @@ Recommended:
 * High-performance SSD with at least 1TB of free space
 * 25+ MBit/sec download Internet service
 
-
 ## Running `geth with PoN Builder`
 
 ### Enabling PoN Builder
@@ -80,16 +78,24 @@ To enable the PoN Builder, use the following command:
 
 ```shell
 geth [GETH_FLAGS] \
+--http \
+--http.api <api_list_to_enable> \
 --builder \
 --builder.beacon_endpoints <beacon_endpoints> \
 --builder.listen_addr <listen_addr> \
 --builder.public_accesspoint <public_accesspoint> \
 --builder.relay_endpoint <relay_endpoint> \
 --builder.secret_key <secret_key> \
---builder.wallet_private_key <wallet_private_key>
---builder.rpbs <rpbs_service_base_url>
---builder.metrics
---builder.metrics_reset
+--builder.wallet_private_key <wallet_private_key> \
+--builder.rpbs <rpbs_service_base_url> \
+--builder.metrics \
+--builder.metrics_reset \
+--builder.bundles \
+--builder.bundles_reset \
+--builder.bundles_max_lifetime <bundles_max_lifetime> \
+--builder.bundles_max_future <bundles_max_future> \
+--builder.submission_end_window <submission_end_window> \
+--builder.engine_rate_limit <engine_rate_limit> 
 ```
 
 Make sure to replace the values enclosed in `<` and `>` with the appropriate values for your configuration.
@@ -98,6 +104,8 @@ Make sure to replace the values enclosed in `<` and `>` with the appropriate val
 
 | Flag | Description | Default | Required |
 | --- | --- | --- | --- |
+| `--http` | Enable the HTTP-RPC server | `false` | Yes |
+| `--http.api` | API's offered over the HTTP-RPC interface. To enable builder rpc add `mev` to list | `eth,net,mev` | Yes |
 | `--builder` | Enable the PoN Builder | `false` | Yes |
 | `--builder.beacon_endpoints` | Beacon node endpoints (comma seperated) | `"http://127.0.0.1:5052"` | Yes |
 | `--builder.listen_addr` | Listen address for the PoN Builder service locally | `""` | Yes |
@@ -108,29 +116,42 @@ Make sure to replace the values enclosed in `<` and `>` with the appropriate val
 | `--builder.rpbs` | RPBS Service endpoint | `""` | Yes |
 | `--builder.metrics` | Enable metrics | `false` | No |
 | `--builder.metrics_reset` | Reset metrics | `false` | No |
-
+| `--builder.bundles` | Enable builder mev bundles service | `false` | No |
+| `--builder.bundles_reset` | Reset builder mev bundles service | `false` | No |
+| `--builder.bundles_max_lifetime` | Max lifetime in seconds (s) for mev bundles (defaults to 30 days) | `2592000` | No |
+| `--builder.bundles_max_future` | Max future in seconds (s) for mev bundles (defaults to 30 days) | `2592000` | No |
+| `--builder.submission_end_window` | Time in seconds (s) before the end of any bid period that the builder will finalize the last block bid submission | `2` | No |
+| `--builder.engine_rate_limit` | Rate limit in milliseconds (ms) for building blocks from internal engine for given slot (must be greater than 1) | `500` | No |
 
 ### Example
 
 For example, to enable the PoN Builder with the following configuration:
 
-- `--builder.beacon_endpoint`: `http://localhost:5052`
-- `--builder.listen_addr`: `:10000`
-- `--builder.public_accesspoint`: `https://builder.0xblockswap.com`
-- `--builder.relay_endpoint`: `https://0x1234abcd1234abcd1234abcd@relayer.0xblockswap.com`
-- `--builder.wallet_private_key`: `0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd`
-- `--builder.secret_key`: `0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd`
-- `--builder.rpbs`: `http://localhost:3000`
-- `--builder.metrics`: `true`
-- `--builder.metrics_reset`: `true`
-
+* `--http`: `true`
+* `--http.api`: `eth,net,mev`
+* `--builder.beacon_endpoints`: `http://localhost:5052`
+* `--builder.listen_addr`: `:10000`
+* `--builder.public_accesspoint`: `https://builder.0xblockswap.com`
+* `--builder.relay_endpoint`: `https://0x1234abcd1234abcd1234abcd@relayer.0xblockswap.com`
+* `--builder.wallet_private_key`: `0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd`
+* `--builder.secret_key`: `0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd`
+* `--builder.rpbs`: `http://localhost:3000`
+* `--builder.metrics`: `true`
+* `--builder.metrics_reset`: `true`
+* `--builder.bundles`: `true`
+* `--builder.bundles_reset`: `true`
+* `--builder.bundles_max_lifetime`: `2592000`
+* `--builder.bundles_max_future`: `2592000`
+* `--builder.submission_end_window`: `2`
+* `--builder.engine_rate_limit`: `500`
 
 Use the following command where the first few flags are specific to running geth, followed by the PoN Builder flags
 
 ```shell
 geth --goerli --datadir /home/ubuntu/execution --authrpc.addr localhost --authrpc.port 8551 --authrpc.vhosts localhost \
---http --http.api eth,net \
---http --builder \
+--http \
+--http.api eth,net,mev \
+--builder \
 --builder.beacon_endpoints http://localhost:5052 \
 --builder.listen_addr :10000 \
 --builder.public_accesspoint https://builder.0xblockswap.com \
@@ -139,7 +160,13 @@ geth --goerli --datadir /home/ubuntu/execution --authrpc.addr localhost --authrp
 --builder.secret_key 0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd \
 --builder.rpbs http://localhost:3000 \
 --builder.metrics \
---builder.metrics_reset
+--builder.metrics_reset \
+--builder.bundles \
+--builder.bundles_reset \
+--builder.bundles_max_lifetime 2592000 \
+--builder.bundles_max_future 2592000 \
+--builder.submission_end_window 2 \
+--builder.engine_rate_limit 500
 ```
 
 ## Builder API Endpoints
@@ -152,40 +179,443 @@ Endpoint: `GET /eth/v1/builder/status`
 
 This endpoint is used to check the status of the builder service.
 
-### Submit Block Bid (Relayer)
+### Submit Block Bid
 
 Endpoint: `POST /eth/v1/builder/submit_block_bid`
 
 This endpoint is used to submit a block bid to the builder service which bulds a block and submits the block bid to the relay. The request body should be a JSON object containing the following fields:
 
--   `slot`: the block slot for the bid
--   `bidAmount`: the bid amount in wei
--   `transactions`: an array of signed transaction RLP encoded bytes representing the transactions to prioritize and include in the block bid
--   `suggestedFeeRecipient`: the suggested fee recipient address for the block
--   `noMempoolTxs`: a boolean value indicating whether to include mempool transactions in the block bid
+* `slot`: the block slot for the bid (optional, if not provided the builder will use the current slot)
+* `bidAmount`: the bid amount in wei
+* `transactions`: an array of signed transaction RLP encoded bytes representing the transactions to prioritize and include in the block bid
+* `suggestedFeeRecipient`: the suggested fee recipient address for the block
+* `noMempoolTxs`: a boolean value indicating whether to include mempool transactions in the block bid
 
-### Submit Blinded Block (Searchers)
+Sample scripts are provided within `scripts/` to generate and submit block bids.
+
+### Submit Block Bounty Bid
+
+Endpoint: `POST /eth/v1/builder/submit_block_bounty_bid`
+
+This endpoint is used to submit a block bid to the builder service which bulds a block and submits the block bid to the relay. The request body should be a JSON object containing the following fields:
+
+* `slot`: the block slot for the bid (required)
+* `bidAmount`: the bid amount in wei
+* `transactions`: an array of signed transaction RLP encoded bytes representing the transactions to prioritize and include in a new the bounty block (optional)
+* `suggestedFeeRecipient`: the suggested fee recipient address for the block
+* `noMempoolTxs`: a boolean value indicating whether to include mempool transactions in the block bid
+
+### Submit Blinded Block
 
 Endpoint: `POST /eth/v1/builder/blinded_blocks`
 
 This endpoint is used to submit a blinded block to the builder service which processes the blinded beacon block and returns the beacon block to the relay, as well as submits to the chain. The request body should be a JSON object being the signed blinded block containing the following fields:
 
--   `message`: the blinded beacon block
--   `signature`: the signature of the blinded beacon block
-
-### Submit Private Transactions (Private Order Flow)
-
-Endpoint: `POST /eth/v1/builder/private_transactions`
-
-This endpoint is used to submit signed private transactions to the builder service. The request body should be a JSON object containing the following fields:
-
--   `transactions`: an array of transaction RLP encoded bytes representing the private transactions to be sent.
+* `message`: the blinded beacon block
+* `signature`: the signature of the blinded beacon block
 
 ### Builder Dashboard
 
 Endpoint: `GET /eth/v1/builder/`
 
 This endpoint will render an HTML dashboard that displays information about the builder service, including its syncing status, database entries, and various statistics such as average bid amounts and MEV values.
+
+## Builder-specific RPC Calls
+
+PoN Builder exposes a few RPC calls that are specific to the Builder service. These add additional functionality to the standard geth RPC calls.
+All builder rpc calls are sent to the listening address and port set by --http and --http.port flags for geth's rpc
+
+### `mev_sendBundle`
+
+This method is used to send a bundle of transactions to the builder service. The request body should be a JSON object containing the following fields:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "mev_sendBundle",
+    "params": [    
+        {      
+            "txs": ["0x003...", "0x056a.."],    // a list of hex-encoded signed transaction bytes            
+            "blockNumber": "550000",        // block number for which this bundle is valid - optional only if minTimestamp and maxTimestamp are set
+            "minTimestamp": "0",                  // unix timestamp when this bundle becomes active - optional 
+            "maxTimestamp": "1672933616",         // unix timestamp how long this bundle stays valid - optional      
+            "revertingTxHashes": ["0xk0d..."]   // list of hashes of possibly reverting txs - optional   
+        }  
+    ],
+    "id": 1
+}
+```
+
+Successful responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+        "id": "0x123...", // bundle id
+        "inserted_at": "2021-05-12T12:00:00Z", // timestamp when the bundle was inserted into the database
+        "bundle_hash": "0x123...", // hash of the bundle
+        "txs": ["0x003...", "0x056a.."], // a list of hex-encoded signed transaction bytes
+        "block_number": "550000", // block number for which this bundle is valid
+        "min_timestamp": "0", // unix timestamp when this bundle becomes active
+        "max_timestamp": "1672933616", // unix timestamp how long this bundle stays valid
+        "reverting_tx_hashes": ["0xk0d..."], // list of hashes of possibly reverting txs
+        "builder_pubkey": "0x123...", // public key of the builder
+        "builder_signature": "0x123...", // signature of the bundle by the builder can be verified with the public key
+        "bundle_transaction_count": "2", // number of transactions in the bundle
+        "bundle_total_gas": "1000000", // total gas of the bundle
+        "added": true, // whether the bundle was added to a block
+        "error": false, // whether the bundle had an error
+        "error_message": "", // error message if the bundle had an error
+        "failed_retry_count": "0" // number of times the bundle was retried
+    }
+}
+```
+
+Error responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -3200, // error code,
+        "message": "error message", // error message
+    }
+}
+```
+
+### `mev_updateBundle`
+
+This method is used to update a bundle of transactions to the builder service. The request body should be a JSON object containing the following fields:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "mev_updateBundle",
+    "params": [    
+        {      
+            "id": "0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd", // bundle id to update
+            "txs": ["0x003...", "0x056a.."],    // a list of hex-encoded signed transaction bytes            
+            "blockNumber": "550000",        // block number for which this bundle is valid - optional only if minTimestamp and maxTimestamp are set
+            "minTimestamp": "0",                  // unix timestamp when this bundle becomes active - optional 
+            "maxTimestamp": "1672933616",         // unix timestamp how long this bundle stays valid - optional      
+            "revertingTxHashes": ["0xk0d..."]   // list of hashes of possibly reverting txs - optional   
+        }  
+    ],
+    "id": 1
+}
+```
+
+Successful responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+        "id": "0x123...", // bundle id
+        "inserted_at": "2021-05-12T12:00:00Z", // timestamp when the bundle was inserted into the database
+        "bundle_hash": "0x123...", // hash of the bundle
+        "txs": ["0x003...", "0x056a.."], // a list of hex-encoded signed transaction bytes
+        "block_number": "550000", // block number for which this bundle is valid
+        "min_timestamp": "0", // unix timestamp when this bundle becomes active
+        "max_timestamp": "1672933616", // unix timestamp how long this bundle stays valid
+        "reverting_tx_hashes": ["0xk0d..."], // list of hashes of possibly reverting txs
+        "builder_pubkey": "0x123...", // public key of the builder
+        "builder_signature": "0x123...", // signature of the bundle by the builder can be verified with the public key
+        "bundle_transaction_count": "2", // number of transactions in the bundle
+        "bundle_total_gas": "1000000", // total gas of the bundle
+        "added": true, // whether the bundle was added to a block
+        "error": false, // whether the bundle had an error
+        "error_message": "", // error message if the bundle had an error
+        "failed_retry_count": "0" // number of times the bundle was retried
+    }
+}
+```
+
+Error responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -3200, // error code,
+        "message": "error message", // error message
+    }
+}
+```
+
+### `mev_getBundle`
+
+This method is used to get a bundle of transactions from the builder service. The request body should be a JSON object containing the following fields:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "mev_getBundle",
+    "params": [
+        {
+            "id": "0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd" // bundle id to get
+        }
+    ],
+    "id": 1
+}
+```
+
+Successful responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+        "id": "0x123...", // bundle id
+        "inserted_at": "2021-05-12T12:00:00Z", // timestamp when the bundle was inserted into the database
+        "bundle_hash": "0x123...", // hash of the bundle
+        "block_number": "550000", // block number for which this bundle is valid
+        "min_timestamp": "0", // unix timestamp when this bundle becomes active
+        "max_timestamp": "1672933616", // unix timestamp how long this bundle stays valid
+        "builder_pubkey": "0x123...", // public key of the builder
+        "builder_signature": "0x123...", // signature of the bundle by the builder can be verified with the public key
+        "bundle_transaction_count": "2", // number of transactions in the bundle
+        "bundle_total_gas": "1000000", // total gas of the bundle
+        "added": true, // whether the bundle was added to a block
+        "error": false, // whether the bundle had an error
+        "error_message": "", // error message if the bundle had an error
+        "failed_retry_count": "0" // number of times the bundle was retried
+    }
+}
+```
+
+For privacy and security reasons, the `txs` and `reverting_tx_hashes` fields are not returned when retrieving a bundle.
+
+Error responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -3200, // error code,
+        "message": "error message", // error message
+    }
+}
+```
+
+### `mev_cancelBundle`
+
+This method is used to cancel a bundle of transactions to the builder service. The request body should be a JSON object containing the following fields:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "mev_cancelBundle",
+    "params": [
+        {
+            "id": "0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd" // bundle id to cancel
+        }
+    ],
+    "id": 1
+}
+```
+
+Successful responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": null
+}
+```
+
+Error responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -3200, // error code,
+        "message": "error message", // error message
+    }
+}
+```
+
+### `mev_sendPrivateTransaction`
+
+This method is used to send a private transaction to the builder service. The request body should be a JSON object containing the following fields:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "mev_sendPrivateTransaction",
+    "params": [
+        [
+            {
+                "tx": "0x0000...d46e8dd67c5d32be8d46675058bb8eb970870f072445675" // hex-encoded signed transaction bytes
+            }
+        ]
+    ],
+    "id": 1
+}
+```
+
+Successful responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": [
+      "0x123...", // transaction hash
+    ]
+}
+```
+
+Error responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -3200, // error code,
+        "message": "error message", // error message
+    }
+}
+```
+
+### `mev_sendPrivateRawTransaction`
+
+This method is used to send a private transaction to the builder service. The request body should be a JSON object containing the following fields:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "mev_sendPrivateRawTransaction",
+    "params": [
+        [ 
+        "0x0000...d46e8dd67c5d32be8d46675058bb8eb970870f072445675" // hex-encoded signed transaction bytes
+        ]
+    ],
+    "id": 1
+}
+```
+
+Successful responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": [
+      "0x123...", // transaction hash
+    ]
+}
+```
+
+Error responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -3200, // error code,
+        "message": "error message", // error message
+    }
+}
+```
+
+### `mev_cancelPrivateTransaction`
+
+This method is used to cancel a private transaction to the builder service. The request body should be a JSON object containing the following fields:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "mev_cancelPrivateTransaction",
+    "params": [
+        [
+            {
+                "txHash": "0xf0b..." // tx hash of the transaction to be canceled
+            }
+        ]
+    ],
+    "id": 1
+}
+```
+
+Successful responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": [
+      "0x123...", // transaction hash
+    ]
+}
+```
+
+Error responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -3200, // error code,
+        "message": "error message", // error message
+    }
+}
+```
+
+### `mev_bundleServiceStatus`
+
+This method is used to get the status of the bundle service. The request body should be a JSON object containing the following fields:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "mev_bundleServiceStatus",
+    "params": [],
+    "id": 1
+}
+```
+
+Successful responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": "enabled" // bundle service status
+}
+```
+
+Error responses:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -3200, // error code,
+        "message": "error message", // error message
+    }
+}
+```
+
+### Other Geth RPC Calls
+
+The Builder service also exposes all of the standard Geth RPC calls.
+
+The full list of Geth RPC calls can be found [here](https://geth.ethereum.org/docs/rpc/server). PoN Builder supports all standard [JSON-RPC-API](https://github.com/ethereum/execution-apis) endpoints.
 
 ## `geth` specific flags
 
@@ -197,15 +627,16 @@ particular use case, the user doesn't care about years-old historical data, so w
 sync quickly to the current state of the network. To do so:
 
 ```shell
-$ geth console
+geth console
 ```
 
 This command will:
- * Start `geth` in snap sync mode (default, can be changed with the `--syncmode` flag),
+
+* Start `geth` in snap sync mode (default, can be changed with the `--syncmode` flag),
    causing it to download more data in exchange for avoiding processing the entire history
    of the Ethereum network, which is very CPU intensive.
- * Start the built-in interactive [JavaScript console](https://geth.ethereum.org/docs/interacting-with-geth/javascript-console),
-   (via the trailing `console` subcommand) through which you can interact using [`web3` methods](https://github.com/ChainSafe/web3.js/blob/0.20.7/DOCUMENTATION.md) 
+* Start the built-in interactive [JavaScript console](https://geth.ethereum.org/docs/interacting-with-geth/javascript-console),
+   (via the trailing `console` subcommand) through which you can interact using [`web3` methods](https://github.com/ChainSafe/web3.js/blob/0.20.7/DOCUMENTATION.md)
    (note: the `web3` version bundled within `geth` is very old, and not up to date with official docs),
    as well as `geth`'s own [management APIs](https://geth.ethereum.org/docs/interacting-with-geth/rpc).
    This tool is optional and if you leave it out you can always attach it to an already running
@@ -220,7 +651,7 @@ network, you want to join the **test** network with your node, which is fully eq
 the main network, but with play-Ether only.
 
 ```shell
-$ geth --goerli console
+geth --goerli console
 ```
 
 The `console` subcommand has the same meaning as above and is equally
@@ -228,10 +659,10 @@ useful on the testnet too.
 
 Specifying the `--goerli` flag, however, will reconfigure your `geth` instance a bit:
 
- * Instead of connecting to the main Ethereum network, the client will connect to the Görli
+* Instead of connecting to the main Ethereum network, the client will connect to the Görli
    test network, which uses different P2P bootnodes, different network IDs and genesis
    states.
- * Instead of using the default data directory (`~/.ethereum` on Linux for example), `geth`
+* Instead of using the default data directory (`~/.ethereum` on Linux for example), `geth`
    will nest itself one level deeper into a `goerli` subfolder (`~/.ethereum/goerli` on
    Linux). Note, on OSX and Linux this also means that attaching to a running testnet node
    requires the use of a custom endpoint since `geth attach` will try to attach to a
@@ -251,14 +682,14 @@ As an alternative to passing the numerous flags to the `geth` binary, you can al
 configuration file via:
 
 ```shell
-$ geth --config /path/to/your_config.toml
+geth --config /path/to/your_config.toml
 ```
 
 To get an idea of how the file should look like you can use the `dumpconfig` subcommand to
 export your existing configuration:
 
 ```shell
-$ geth --your-favourite-flags dumpconfig
+geth --your-favourite-flags dumpconfig
 ```
 
 *Note: This works only with `geth` v1.6.0 and above.*
@@ -299,19 +730,19 @@ you'd expect.
 
 HTTP based JSON-RPC API options:
 
-  * `--http` Enable the HTTP-RPC server
-  * `--http.addr` HTTP-RPC server listening interface (default: `localhost`)
-  * `--http.port` HTTP-RPC server listening port (default: `8545`)
-  * `--http.api` API's offered over the HTTP-RPC interface (default: `eth,net,web3`)
-  * `--http.corsdomain` Comma separated list of domains from which to accept cross origin requests (browser enforced)
-  * `--ws` Enable the WS-RPC server
-  * `--ws.addr` WS-RPC server listening interface (default: `localhost`)
-  * `--ws.port` WS-RPC server listening port (default: `8546`)
-  * `--ws.api` API's offered over the WS-RPC interface (default: `eth,net,web3`)
-  * `--ws.origins` Origins from which to accept WebSocket requests
-  * `--ipcdisable` Disable the IPC-RPC server
-  * `--ipcapi` API's offered over the IPC-RPC interface (default: `admin,debug,eth,miner,net,personal,txpool,web3`)
-  * `--ipcpath` Filename for IPC socket/pipe within the datadir (explicit paths escape it)
+* `--http` Enable the HTTP-RPC server
+* `--http.addr` HTTP-RPC server listening interface (default: `localhost`)
+* `--http.port` HTTP-RPC server listening port (default: `8545`)
+* `--http.api` API's offered over the HTTP-RPC interface (default: `eth,net,web3`)
+* `--http.corsdomain` Comma separated list of domains from which to accept cross origin requests (browser enforced)
+* `--ws` Enable the WS-RPC server
+* `--ws.addr` WS-RPC server listening interface (default: `localhost`)
+* `--ws.port` WS-RPC server listening port (default: `8546`)
+* `--ws.api` API's offered over the WS-RPC interface (default: `eth,net,web3`)
+* `--ws.origins` Origins from which to accept WebSocket requests
+* `--ipcdisable` Disable the IPC-RPC server
+* `--ipcapi` API's offered over the IPC-RPC interface (default: `admin,debug,eth,miner,net,personal,txpool,web3`)
+* `--ipcpath` Filename for IPC socket/pipe within the datadir (explicit paths escape it)
 
 You'll need to use your own programming environments' capabilities (libraries, tools, etc) to
 connect via HTTP, WS or IPC to a `geth` node configured with the above flags and you'll
@@ -382,7 +813,7 @@ With the genesis state defined in the above JSON file, you'll need to initialize
 set:
 
 ```shell
-$ geth init path/to/genesis.json
+geth init path/to/genesis.json
 ```
 
 #### Creating the rendezvous point
@@ -392,8 +823,8 @@ start a bootstrap node that others can use to find each other in your network an
 the internet. The clean way is to configure and run a dedicated bootnode:
 
 ```shell
-$ bootnode --genkey=boot.key
-$ bootnode --nodekey=boot.key
+bootnode --genkey=boot.key
+bootnode --nodekey=boot.key
 ```
 
 With the bootnode online, it will display an [`enode` URL](https://ethereum.org/en/developers/docs/networking-layer/network-addresses/#enode)
@@ -413,14 +844,13 @@ probably also be desirable to keep the data directory of your private network se
 do also specify a custom `--datadir` flag.
 
 ```shell
-$ geth --datadir=path/to/custom/data/folder --bootnodes=<bootnode-enode-url-from-above>
+geth --datadir=path/to/custom/data/folder --bootnodes=<bootnode-enode-url-from-above>
 ```
 
 *Note: Since your network will be completely cut off from the main and test networks, you'll
 also need to configure a miner to process transactions and create new blocks for you.*
 
 #### Running a private miner
-
 
 In a private network setting a single CPU miner instance is more than enough for
 practical purposes as it can produce a stable stream of blocks at the correct intervals
@@ -429,7 +859,7 @@ ones either). To start a `geth` instance for mining, run it with all your usual 
 by:
 
 ```shell
-$ geth <usual-flags> --mine --miner.threads=1 --miner.etherbase=0x0000000000000000000000000000000000000000
+geth <usual-flags> --mine --miner.threads=1 --miner.etherbase=0x0000000000000000000000000000000000000000
 ```
 
 Which will start mining blocks and transactions on a single CPU thread, crediting all
@@ -447,4 +877,4 @@ The go-ethereum binaries (i.e. all code inside of the `cmd` directory) are licen
 [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html), also
 included in our repository in the `COPYING` file.
 
-The builder (under the `/builder/` directory) is licensed under WTFPL license defined in the following [file](./License).
+The builder functionality (under the `/builder/` and `/miner/` directory) is licensed under MIT license defined in the following [file](./License).

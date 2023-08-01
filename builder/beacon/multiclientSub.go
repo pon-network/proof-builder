@@ -65,12 +65,12 @@ func (b *MultiBeaconClient) SubscribeToHeadEvents(ctx context.Context, headChann
 			// to be able to verify the signature of the block
 			b.BeaconData.Mu.Lock()
 			for k := range b.BeaconData.SlotProposerMap {
-				if k < currentSlot-64 {
+				if int64(k) < int64(currentSlot)-64 {
 					delete(b.BeaconData.SlotProposerMap, k)
 				}
 			}
 			for k := range b.BeaconData.RandaoMap {
-				if k < currentSlot-64 {
+				if int64(k) < int64(currentSlot)-64 {
 					delete(b.BeaconData.RandaoMap, k)
 				}
 			}
@@ -97,7 +97,7 @@ func (b *MultiBeaconClient) SubscribeToPayloadAttributesEvents(ctx context.Conte
 
 			log.Info("Received payload attributes event", 
 			"slot", payloadAttrs.ProposalSlot, 
-			"withdrawals", len(*payloadAttrs.PayloadAttributes.Withdrawals), 
+			"withdrawals", len(payloadAttrs.PayloadAttributes.Withdrawals), 
 			"proposer_index", payloadAttrs.ProposerIndex)
 
 			b.BeaconData.Mu.Lock()
@@ -107,7 +107,7 @@ func (b *MultiBeaconClient) SubscribeToPayloadAttributesEvents(ctx context.Conte
 			// Clean up old data
 			b.BeaconData.Mu.Lock()
 			for slot := range b.BeaconData.SlotPayloadAttributesMap {
-				if slot < payloadAttrs.ProposalSlot-64 {
+				if int64(slot) < int64(payloadAttrs.ProposalSlot)-64 {
 					delete(b.BeaconData.SlotPayloadAttributesMap, slot)
 				}
 			}

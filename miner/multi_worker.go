@@ -11,6 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
+
+	bundleTypes "github.com/bsn-eng/pon-golang-types/bundles"
 )
 
 type multiWorker struct {
@@ -88,17 +90,19 @@ func (w *multiWorker) disablePreseal() {
 }
 
 type resPair struct {
-	res      *types.Block
-	fees     *big.Int
-	payoutTx []byte
-	err      error
+	res          *types.Block
+	fees         *big.Int
+	bidAmount   uint64
+	payoutTx     []byte
+	triedBundles []bundleTypes.BuilderBundle
+	err          error
 }
 
-func (w *multiWorker) BuildBlockWithCallback(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool, transactions [][]byte, withdrawals types.Withdrawals, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64, sealedBlockCallback SealedBlockCallbackFn) (chan *resPair, error) {
+func (w *multiWorker) BuildBlockWithCallback(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, withdrawals types.Withdrawals, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64, sealedBlockCallback SealedBlockCallbackFn) (chan *resPair, error) {
 	allResPairs := []resPair{}
 
 	for _, worker := range w.workers {
-		res, fees, payoutTx, err := worker.buildBlock(
+		res, fees, bidAmount, payoutTx, triedBundles, err := worker.getSealingBlock(
 			parent,
 			timestamp,
 			coinbase,
@@ -106,10 +110,11 @@ func (w *multiWorker) BuildBlockWithCallback(parent common.Hash, timestamp uint6
 			withdrawals,
 			noTxs,
 			transactions,
+			bundles,
 			payoutPoolAddress,
 			bidAmount,
 			gasLimit)
-		allResPairs = append(allResPairs, resPair{res, fees, payoutTx, err})
+		allResPairs = append(allResPairs, resPair{res, fees, bidAmount, payoutTx, triedBundles, err})
 	}
 
 	if len(allResPairs) == 0 {
@@ -124,7 +129,7 @@ func (w *multiWorker) BuildBlockWithCallback(parent common.Hash, timestamp uint6
 
 			// call the callback function for each worker regardless of the result as it may be used for logging
 			// since the build is async
-			go sealedBlockCallback(chPair.res, chPair.fees, chPair.payoutTx, chPair.err)
+			go sealedBlockCallback(chPair.res, chPair.fees, chPair.bidAmount, chPair.payoutTx, chPair.triedBundles, chPair.err)
 
 			if chPair.err != nil {
 				log.Error("could not generate block", "err", chPair.err)

@@ -30,11 +30,11 @@ func NewDatabaseService(dirPath string, reset bool) (*DatabaseService, error) {
 		return nil, err
 	}
 
-	// Drop tables if they are not of right configuration
-	db.MustExec(vars.DropSchema)
-
 	if reset {
 		db.MustExec(vars.ForceDropSchema)
+	} else {
+		// Drop tables if they are not of right configuration
+		db.MustExec(vars.DropSchema)
 	}
 
 	// Migrate the schema

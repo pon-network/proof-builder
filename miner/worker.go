@@ -35,6 +35,9 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
+
+	bundleTypes "github.com/bsn-eng/pon-golang-types/bundles"
+	builderTypes "github.com/ethereum/go-ethereum/builder/types"
 )
 
 const (
@@ -166,17 +169,18 @@ const (
 
 // newWorkReq represents a request for new sealing work submitting with relative interrupt notifier.
 type newWorkReq struct {
-	interrupt *int32
+	interrupt *atomic.Int32
 	noempty   bool
 	timestamp int64
 }
 
 // newPayloadResult represents a result struct corresponds to payload generation.
 type newPayloadResult struct {
-	err      error
-	block    *types.Block
-	fees     *big.Int
-	payoutTx []byte
+	err          error
+	block        *types.Block
+	fees         *big.Int
+	payoutTx     []byte
+	triedBundles []bundleTypes.BuilderBundle
 }
 
 // getWorkReq represents a request for getting a new sealing work with provided parameters.
@@ -242,15 +246,15 @@ type worker struct {
 	snapshotState    *state.StateDB
 
 	// atomic status counters
-	running int32 // The indicator whether the consensus engine is running or not.
-	newTxs  int32 // New arrival transaction count since last sealing work submitting.
+	running atomic.Bool  // The indicator whether the consensus engine is running or not.
+	newTxs  atomic.Int32 // New arrival transaction count since last sealing work submitting.
 
 	// noempty is the flag used to control whether the feature of pre-seal empty
 	// block is enabled. The default value is false(pre-seal is enabled by default).
 	// But in some special scenario the consensus engine will seal blocks instantaneously,
 	// in this case this feature will add all empty blocks into canonical chain
 	// non-stop and no real transaction will be included.
-	noempty uint32
+	noempty atomic.Bool
 
 	// newpayloadTimeout is the maximum timeout allowance for creating payload.
 	// The default value is 2 seconds but node operator can set it to arbitrary
@@ -375,12 +379,12 @@ func (w *worker) setRecommitInterval(interval time.Duration) {
 
 // disablePreseal disables pre-sealing feature
 func (w *worker) disablePreseal() {
-	atomic.StoreUint32(&w.noempty, 1)
+	w.noempty.Store(true)
 }
 
 // enablePreseal enables pre-sealing feature
 func (w *worker) enablePreseal() {
-	atomic.StoreUint32(&w.noempty, 0)
+	w.noempty.Store(false)
 }
 
 // pending returns the pending state and corresponding block.
@@ -412,24 +416,24 @@ func (w *worker) pendingBlockAndReceipts() (*types.Block, types.Receipts) {
 
 // start sets the running status as 1 and triggers new work submitting.
 func (w *worker) start() {
-	atomic.StoreInt32(&w.running, 1)
+	w.running.Store(true)
 	w.startCh <- struct{}{}
 }
 
 // stop sets the running status as 0.
 func (w *worker) stop() {
-	atomic.StoreInt32(&w.running, 0)
+	w.running.Store(false)
 }
 
 // isRunning returns an indicator whether worker is running or not.
 func (w *worker) isRunning() bool {
-	return atomic.LoadInt32(&w.running) == 1
+	return w.running.Load()
 }
 
 // close terminates all background threads maintained by the worker.
 // Note the worker does not support being closed multiple times.
 func (w *worker) close() {
-	atomic.StoreInt32(&w.running, 0)
+	w.running.Store(false)
 	close(w.exitCh)
 	w.wg.Wait()
 }
@@ -460,7 +464,7 @@ func recalcRecommit(minRecommit, prev time.Duration, target float64, inc bool) t
 func (w *worker) newWorkLoop(recommit time.Duration) {
 	defer w.wg.Done()
 	var (
-		interrupt   *int32
+		interrupt   *atomic.Int32
 		minRecommit = recommit // minimal resubmit interval specified by user.
 		timestamp   int64      // timestamp for each round of sealing.
 	)
@@ -472,16 +476,16 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 	// commit aborts in-flight transaction execution with given signal and resubmits a new one.
 	commit := func(noempty bool, s int32) {
 		if interrupt != nil {
-			atomic.StoreInt32(interrupt, s)
+			interrupt.Store(s)
 		}
-		interrupt = new(int32)
+		interrupt = new(atomic.Int32)
 		select {
 		case w.newWorkCh <- &newWorkReq{interrupt: interrupt, noempty: noempty, timestamp: timestamp}:
 		case <-w.exitCh:
 			return
 		}
 		timer.Reset(recommit)
-		atomic.StoreInt32(&w.newTxs, 0)
+		w.newTxs.Store(0)
 	}
 	// clearPending cleans the stale pending tasks.
 	clearPending := func(number uint64) {
@@ -511,7 +515,7 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 			// higher priced transactions. Disable this overhead for pending blocks.
 			if w.isRunning() && (w.chainConfig.Clique == nil || w.chainConfig.Clique.Period > 0) {
 				// Short circuit if no new transaction arrives.
-				if atomic.LoadInt32(&w.newTxs) == 0 {
+				if w.newTxs.Load() == 0 {
 					timer.Reset(recommit)
 					continue
 				}
@@ -577,12 +581,13 @@ func (w *worker) mainLoop() {
 			w.commitWork(req.interrupt, req.noempty, req.timestamp)
 
 		case req := <-w.getWorkCh:
-			block, fees, payoutTx, err := w.generateWork(req.params)
+			block, fees, payoutTx, triedBundles, err := w.generateWork(req.params)
 			req.result <- &newPayloadResult{
-				err:      err,
-				block:    block,
-				fees:     fees,
-				payoutTx: payoutTx,
+				err:          err,
+				block:        block,
+				fees:         fees,
+				payoutTx:     payoutTx,
+				triedBundles: triedBundles,
 			}
 		case ev := <-w.chainSideCh:
 			// Short circuit for duplicate side blocks
@@ -654,7 +659,7 @@ func (w *worker) mainLoop() {
 					w.commitWork(nil, true, time.Now().Unix())
 				}
 			}
-			atomic.AddInt32(&w.newTxs, int32(len(ev.Txs)))
+			w.newTxs.Add(int32(len(ev.Txs)))
 
 		// System stopped
 		case <-w.exitCh:
@@ -805,7 +810,7 @@ func (w *worker) makeEnv(parent *types.Header, header *types.Header, coinbase co
 
 	// Note the passed coinbase may be different with header.Coinbase.
 	env := &environment{
-		signer:    types.MakeSigner(w.chainConfig, header.Number),
+		signer:    types.MakeSigner(w.chainConfig, header.Number, header.Time),
 		state:     state,
 		coinbase:  coinbase,
 		ancestors: mapset.NewSet[common.Hash](),
@@ -881,7 +886,7 @@ func (w *worker) commitTransaction(env *environment, tx *types.Transaction) ([]*
 	return receipt.Logs, nil
 }
 
-func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByPriceAndNonce, interrupt *int32) error {
+func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByPriceAndNonce, interrupt *atomic.Int32) error {
 	gasLimit := env.header.GasLimit
 	if env.gasPool == nil {
 		env.gasPool = new(core.GasPool).AddGas(gasLimit)
@@ -891,7 +896,7 @@ func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByP
 	for {
 		// Check interruption signal and abort building if it's fired.
 		if interrupt != nil {
-			if signal := atomic.LoadInt32(interrupt); signal != commitInterruptNone {
+			if signal := interrupt.Load(); signal != commitInterruptNone {
 				return signalToErr(signal)
 			}
 		}
@@ -922,20 +927,10 @@ func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByP
 
 		logs, err := w.commitTransaction(env, tx)
 		switch {
-		case errors.Is(err, core.ErrGasLimitReached):
-			// Pop the current out-of-gas transaction without shifting in the next from the account
-			log.Trace("Gas limit exceeded for current block", "sender", from)
-			txs.Pop()
-
 		case errors.Is(err, core.ErrNonceTooLow):
 			// New head notification data race between the transaction pool and miner, shift
 			log.Trace("Skipping transaction with low nonce", "sender", from, "nonce", tx.Nonce())
 			txs.Shift()
-
-		case errors.Is(err, core.ErrNonceTooHigh):
-			// Reorg notification data race between the transaction pool and miner, skip account =
-			log.Trace("Skipping account with hight nonce", "sender", from, "nonce", tx.Nonce())
-			txs.Pop()
 
 		case errors.Is(err, nil):
 			// Everything ok, collect the logs and shift in the next transaction from the same account
@@ -943,16 +938,11 @@ func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByP
 			env.tcount++
 			txs.Shift()
 
-		case errors.Is(err, types.ErrTxTypeNotSupported):
-			// Pop the unsupported transaction without shifting in the next from the account
-			log.Trace("Skipping unsupported transaction type", "sender", from, "type", tx.Type())
-			txs.Pop()
-
 		default:
-			// Strange error, discard the transaction and get the next in line (note, the
-			// nonce-too-high clause will prevent us from executing in vain).
+			// Transaction is regarded as invalid, drop all consecutive transactions from
+			// the same sender because of `nonce-too-high` clause.
 			log.Debug("Transaction failed, account skipped", "hash", tx.Hash(), "err", err)
-			txs.Shift()
+			txs.Pop()
 		}
 	}
 	if !w.isRunning() && len(coalescedLogs) > 0 {
@@ -975,18 +965,19 @@ func (w *worker) commitTransactions(env *environment, txs *types.TransactionsByP
 
 // generateParams wraps various of settings for generating sealing task.
 type generateParams struct {
-	timestamp         uint64            // The timstamp for sealing task
-	forceTime         bool              // Flag whether the given timestamp is immutable or not
-	parentHash        common.Hash       // Parent block hash, empty means the latest chain head
-	coinbase          common.Address    // The fee recipient address for including transaction
-	random            common.Hash       // The randomness generated by beacon chain, empty before the merge
-	withdrawals       types.Withdrawals // List of withdrawals to include in block.
-	noUncle           bool              // Flag whether the uncle block inclusion is allowed
-	noTxs             bool              // Flag whether an empty block without any transaction is expected
-	gasLimit          uint64            // The requested gas limit target for the block.
-	transactions      [][]byte          // List of required transactions to include in block.
-	payoutPoolAddress common.Address    // The payout transaction bytes for the block bid transaction.
-	bidAmount         uint64            // The bid amount for the block.
+	timestamp         uint64                      // The timstamp for sealing task
+	forceTime         bool                        // Flag whether the given timestamp is immutable or not
+	parentHash        common.Hash                 // Parent block hash, empty means the latest chain head
+	coinbase          common.Address              // The fee recipient address for including transaction
+	random            common.Hash                 // The randomness generated by beacon chain, empty before the merge
+	withdrawals       types.Withdrawals           // List of withdrawals to include in block.
+	noUncle           bool                        // Flag whether the uncle block inclusion is allowed
+	noTxs             bool                        // Flag whether an empty block without any transaction is expected
+	gasLimit          uint64                      // The requested gas limit target for the block.
+	transactions      [][]byte                    // List of required transactions to include in block.
+	bundles           []bundleTypes.BuilderBundle //List of required bundles to include in block.
+	payoutPoolAddress common.Address              // The payout transaction bytes for the block bid transaction.
+	bidAmount         uint64                      // The bid amount for the block.
 }
 
 // prepareWork constructs the sealing task according to the given parameters,
@@ -1029,9 +1020,21 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 		Coinbase:   genParams.coinbase,
 	}
 	// Set the extra field.
-	if len(w.extra) != 0 {
+	if genParams.bidAmount != 0 {
+		header.Extra = []byte(builderTypes.BUILDER_VERSIONED_NAME) 
+	} else if len(w.extra) != 0 {
 		header.Extra = w.extra
 	}
+
+	if len(header.Extra) > 32 {
+		return nil, fmt.Errorf("extra data is too long, max 32 bytes. Extra data string: %s", string(header.Extra))
+	}
+
+	// ensure that header.Extra is 32 bytes
+	if len(header.Extra) < 32 {
+		header.Extra = append(header.Extra, make([]byte, 32-len(header.Extra))...)
+	}
+
 	// Set the randomness field from the beacon chain if it's available.
 	if genParams.random != (common.Hash{}) {
 		header.MixDigest = genParams.random
@@ -1081,7 +1084,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 // fillTransactions retrieves the pending transactions from the txpool and fills them
 // into the given sealing block. The transaction selection and ordering strategy can
 // be customized with the plugin in the future.
-func (w *worker) fillTransactions(interrupt *int32, env *environment, params *generateParams) ([]byte, error) {
+func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, params *generateParams) ([]byte, []bundleTypes.BuilderBundle, error) {
 	// Split the pending transactions into locals and remotes
 	// Fill the block with all available pending transactions.
 	pending := w.eth.TxPool().Pending(true)
@@ -1101,7 +1104,7 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment, params *ge
 		if params.bidAmount > 0 {
 			// Create room in the gas pool for the payment transaction.
 			if err := env.gasPool.SubGas(uint64(PaymentTxGas)); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
@@ -1109,26 +1112,28 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment, params *ge
 	totalTxGas := uint64(0) // Total gas of all the required transactions to include in block.
 	allTxLogs := make([]*types.Log, 0)
 	if params != nil {
-		if params.transactions != nil && len(params.transactions) > 0 {
 
+		if params.transactions != nil && len(params.transactions) > 0 {
+			// Prioritize putting the builders transactions into the block.
 			var txs = make([]*types.Transaction, len(params.transactions))
 			for i, encTx := range params.transactions {
 				var tx types.Transaction
 				if err := tx.UnmarshalBinary(encTx); err != nil {
-					return nil, fmt.Errorf("invalid transaction provided %d: %v", i, err)
+					return nil, nil, fmt.Errorf("invalid transaction provided %d: %v", i, err)
 				}
 				txs[i] = &tx
 				totalTxGas += tx.Gas()
 			}
 
 			if totalTxGas > env.gasPool.Gas() {
-				return nil, fmt.Errorf("Provided transactions exceed the block gas limit")
+				return nil, nil, fmt.Errorf("Provided transactions exceed the block gas limit")
 			}
 
 			for i, tx := range txs {
+				env.state.SetTxContext(tx.Hash(), env.tcount)
 				txlogs, err := w.commitTransaction(env, tx)
 				if err != nil {
-					return nil, fmt.Errorf("invalid transaction provided %d: %v", i, err)
+					return nil, nil, fmt.Errorf("invalid transaction provided %d: %v", i, err)
 				}
 				env.tcount++
 
@@ -1138,18 +1143,114 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment, params *ge
 		}
 	}
 
-	if params == nil || !params.noTxs {
-		if len(localTxs) > 0 {
-			txs := types.NewTransactionsByPriceAndNonce(env.signer, localTxs, env.header.BaseFee)
-			if err := w.commitTransactions(env, txs, interrupt); err != nil {
-				return nil, err
+	// Then put bundles into the block as many as possible.
+	var triedBundles []bundleTypes.BuilderBundle = nil
+	if params != nil && params.bundles != nil && len(params.bundles) > 0 {
+		for _, bundle := range params.bundles {
+			// Create room in the gas pool for the bundle.
+			if err := env.gasPool.SubGas(bundle.BundleTotalGas); err != nil {
+				// If the bundle cannot fit into the block, skip it.
+				log.Debug("Bundle skipped", "reason", err)
+				continue
 			}
-		}
 
+			var (
+				snap = env.state.Snapshot()
+				gp   = env.gasPool.Gas()
+
+				initialTxCount  = env.tcount
+				intialTxs       = env.txs
+				initialReceipts = env.receipts
+				initialTxLogs   = allTxLogs
+			)
+
+			bundle.Included = true
+
+			// Put the bundle into the block.
+			bundleTxs := bundle.Txs
+			for _, tx := range bundleTxs {
+				env.state.SetTxContext(tx.Hash(), env.tcount)
+				txlogs, err := w.commitTransaction(env, tx)
+
+				// if problem with tx, skip the bundle
+				if err != nil {
+					// check if tx hash is in the allowed revert list
+					if bundle.RevertingTxHashes != nil {
+						// this is a list of tx hashes that are allowed to revert
+						// if the tx hash is not in the list, skip the bundle
+						txSkippable := false
+						for _, hash := range bundle.RevertingTxHashes {
+							if hash.Hex() == tx.Hash().Hex() {
+								txSkippable = true
+								break
+							}
+						}
+						if txSkippable {
+							log.Debug("Tx is allowed to revert", "txHash", tx.Hash().Hex(), "bundleHash", bundle.BundleHash)
+							continue
+						} else {
+							log.Debug("Tx is not allowed to revert", "txHash", tx.Hash().Hex(), "bundleHash", bundle.BundleHash)
+
+							// return block to original state
+							env.state.RevertToSnapshot(snap)
+							env.gasPool.SetGas(gp)
+							env.txs = intialTxs
+							env.tcount = initialTxCount
+							env.receipts = initialReceipts
+							allTxLogs = initialTxLogs
+
+							log.Debug("Bundle skipped", "reason", err, "bundleHash", bundle.BundleHash)
+
+							bundle.Error = true
+							bundle.ErrorMessage = fmt.Errorf("invalid transaction provided %s: %v", tx.Hash().Hex(), err).Error()
+							bundle.Included = false
+
+							break
+						}
+					} else {
+						// No transaction hashes are allowed to revert, skip the bundle
+						log.Debug("Tx is not allowed to revert", "txHash", tx.Hash().Hex(), "bundleHash", bundle.BundleHash)
+
+						// return block to original state
+						env.state.RevertToSnapshot(snap)
+						env.gasPool.SetGas(gp)
+						env.txs = intialTxs
+						env.tcount = initialTxCount
+						env.receipts = initialReceipts
+						allTxLogs = initialTxLogs
+
+						log.Debug("Bundle skipped", "reason", err, "bundleHash", bundle.BundleHash)
+
+						bundle.Error = true
+						bundle.ErrorMessage = fmt.Errorf("invalid transaction provided %s: %v", tx.Hash().Hex(), err).Error()
+						bundle.Included = false
+
+						break
+					}
+
+				}
+
+				env.tcount++
+				allTxLogs = append(allTxLogs, txlogs...)
+			}
+
+			triedBundles = append(triedBundles, bundle)
+
+		}
+	}
+
+	if len(localTxs) > 0 {
+		txs := types.NewTransactionsByPriceAndNonce(env.signer, localTxs, env.header.BaseFee)
+		if err := w.commitTransactions(env, txs, interrupt); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if params == nil || !params.noTxs {
 		if len(remoteTxs) > 0 {
 			txs := types.NewTransactionsByPriceAndNonce(env.signer, remoteTxs, env.header.BaseFee)
 			if err := w.commitTransactions(env, txs, interrupt); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
@@ -1172,20 +1273,20 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment, params *ge
 			log.Info("Checking builder wallet balance", "builderWalletBalance", builderWalletBalance, "totalPayoutCost", totalPayoutCost)
 			if builderWalletBalance.Cmp(totalPayoutCost) < 0 {
 				log.Error("Builder wallet balance is not enough to pay for the bid amount and the transaction fee", "builderWalletBalance", builderWalletBalance, "totalPayoutCost", totalPayoutCost)
-				return nil, fmt.Errorf("builder wallet balance insufficient. Balance: %v, Bid amount: %v, Transaction fee: %v, Total cost: %v", builderWalletBalance, params.bidAmount, paymentFee, totalPayoutCost)
+				return nil, nil, fmt.Errorf("builder wallet balance insufficient. Balance: %v, Bid amount: %v, Transaction fee: %v, Total cost: %v", builderWalletBalance, params.bidAmount, paymentFee, totalPayoutCost)
 			}
 
 			tx, err := w.payoutPoolTransaction(env, &params.payoutPoolAddress, params.bidAmount)
 			if err != nil {
 				log.Error("block builder could not create payout pool transaction", "err", err)
-				return nil, err
+				return nil, nil, err
 			}
 			log.Info("Valid payout pool transaction, proceeding to commit")
-
+			env.state.SetTxContext(tx.Hash(), env.tcount)
 			txlogs, err := w.commitTransaction(env, tx)
 			if err != nil {
 				log.Error("Payout pool transaction commit failed", "hash", tx.Hash().String(), "err", err)
-				return nil, fmt.Errorf("payout pool transaction commit failed - %v", err)
+				return nil, nil, fmt.Errorf("payout pool transaction commit failed - %v", err)
 			}
 			log.Info("Payout pool transaction commit succeeded", "hash", tx.Hash().String())
 			env.tcount++
@@ -1193,7 +1294,7 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment, params *ge
 
 			txBytes, err = tx.MarshalBinary()
 			if err != nil {
-				return nil, fmt.Errorf("Pay out pool transaction marshal failed: %v", err)
+				return nil, nil, fmt.Errorf("Pay out pool transaction marshal failed: %v", err)
 			}
 
 		}
@@ -1208,43 +1309,43 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment, params *ge
 		w.pendingLogsFeed.Send(cpy)
 	}
 
-	return txBytes, nil
+	return txBytes, triedBundles, nil
 }
 
 // generateWork generates a sealing block based on the given parameters.
-func (w *worker) generateWork(params *generateParams) (*types.Block, *big.Int, []byte, error) {
+func (w *worker) generateWork(params *generateParams) (*types.Block, *big.Int, []byte, []bundleTypes.BuilderBundle, error) {
 	work, err := w.prepareWork(params)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	defer work.discard()
 
 	var payoutTx []byte = nil
+	var triedBundles []bundleTypes.BuilderBundle = nil
 
-	// if !params.noTxs {
-	interrupt := new(int32)
+	interrupt := new(atomic.Int32)
 	timer := time.AfterFunc(w.newpayloadTimeout, func() {
-		atomic.StoreInt32(interrupt, commitInterruptTimeout)
+		interrupt.Store(commitInterruptTimeout)
 	})
 	defer timer.Stop()
 
-	payoutTx, err = w.fillTransactions(interrupt, work, params)
+	payoutTx, triedBundles, err = w.fillTransactions(interrupt, work, params)
 	if errors.Is(err, errBlockInterruptedByTimeout) {
 		log.Warn("Block building is interrupted", "allowance", common.PrettyDuration(w.newpayloadTimeout))
 	} else if err != nil {
 		log.Error("Block building failed", "err", err)
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	block, err := w.engine.FinalizeAndAssemble(w.chain, work.header, work.state, work.txs, work.unclelist(), work.receipts, params.withdrawals)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return block, totalFees(block, work.receipts), payoutTx, nil
+	return block, totalFees(block, work.receipts), payoutTx, triedBundles, nil
 }
 
 // commitWork generates several new sealing tasks based on the parent block
 // and submit them to the sealer.
-func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
+func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64) {
 	start := time.Now()
 
 	// Set the coinbase if the worker is running or it's required
@@ -1265,11 +1366,11 @@ func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
 	}
 	// Create an empty block based on temporary copied state for
 	// sealing in advance without waiting block execution finished.
-	if !noempty && atomic.LoadUint32(&w.noempty) == 0 {
+	if !noempty && !w.noempty.Load() {
 		w.commit(work.copy(), nil, false, start)
 	}
 	// Fill pending transactions from the txpool into the block.
-	_, err = w.fillTransactions(interrupt, work, nil)
+	_, _, err = w.fillTransactions(interrupt, work, nil)
 	switch {
 	case err == nil:
 		// The entire block is filled, decrease resubmit interval in case
@@ -1349,10 +1450,10 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 	return nil
 }
 
-// buildBlock generates the sealing block based on the given parameters.
+// getSealingBlock generates the sealing block based on the given parameters.
 // The generation result will be passed back via the given channel no matter
 // the generation itself succeeds or not.
-func (w *worker) buildBlock(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, withdrawals types.Withdrawals, noTxs bool, transactions [][]byte, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64) (*types.Block, *big.Int, []byte, error) {
+func (w *worker) getSealingBlock(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, withdrawals types.Withdrawals, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64) (*types.Block, *big.Int, uint64, []byte, []bundleTypes.BuilderBundle, error) {
 	req := &getWorkReq{
 		params: &generateParams{
 			timestamp:         timestamp,
@@ -1365,6 +1466,7 @@ func (w *worker) buildBlock(parent common.Hash, timestamp uint64, coinbase commo
 			noUncle:           true,
 			noTxs:             noTxs,
 			transactions:      transactions,
+			bundles:           bundles,
 			payoutPoolAddress: payoutPoolAddress,
 			bidAmount:         bidAmount,
 		},
@@ -1374,11 +1476,11 @@ func (w *worker) buildBlock(parent common.Hash, timestamp uint64, coinbase commo
 	case w.getWorkCh <- req:
 		result := <-req.result
 		if result.err != nil {
-			return nil, nil, nil, result.err
+			return nil, nil, 0, nil, nil, result.err
 		}
-		return result.block, result.fees, result.payoutTx, nil
+		return result.block, result.fees, req.params.bidAmount, result.payoutTx, result.triedBundles, nil
 	case <-w.exitCh:
-		return nil, nil, nil, errors.New("miner closed")
+		return nil, nil, 0, nil, nil, errors.New("miner closed")
 	}
 }
 
@@ -1442,7 +1544,7 @@ func (w *worker) payoutPoolTransaction(env *environment, payoutPoolAddress *comm
 	to := payoutPoolAddress
 	amount := new(big.Int).SetUint64(bidAmount)
 	gasLimit := uint64(PaymentTxGas)
-	gasPrice := new(big.Int).Set(env.header.BaseFee)
+	gasPrice := new(big.Int).Add(env.header.BaseFee, big.NewInt(1))
 
 	tx := types.NewTransaction(nonce, *to, amount, gasLimit, gasPrice, nil)
 
@@ -1463,13 +1565,13 @@ func (w *worker) payoutPoolTransaction(env *environment, payoutPoolAddress *comm
 }
 
 // Accepts the block, time at which orders were taken, bundles which were used to build the block and all bundles that were considered for the block
-type SealedBlockCallbackFn = func(block *types.Block, fees *big.Int, payoutPoolTx []byte, err error)
+type SealedBlockCallbackFn = func(block *types.Block, fees *big.Int, bidAmount uint64, payoutPoolTx []byte, triedBundles []bundleTypes.BuilderBundle, err error)
 
 // BuildBlockWithCallback requests to generate a sealing block according to the
 // given parameters. Regardless of whether the generation is successful or not,
 // there is always a result that will be returned through the result channel.
 // The difference is that if the execution fails, the returned result is nil
 // and the concrete error is dropped silently.
-func (miner *Miner) BuildBlockWithCallback(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool, transactions [][]byte, withdrawals types.Withdrawals, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64, sealedBlockCallback SealedBlockCallbackFn) (chan *resPair, error) {
-	return miner.worker.BuildBlockWithCallback(parent, timestamp, coinbase, random, noTxs, transactions, withdrawals, payoutPoolAddress, bidAmount, gasLimit, sealedBlockCallback)
+func (miner *Miner) BuildBlockWithCallback(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, withdrawals types.Withdrawals, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64, sealedBlockCallback SealedBlockCallbackFn) (chan *resPair, error) {
+	return miner.worker.BuildBlockWithCallback(parent, timestamp, coinbase, random, noTxs, transactions, bundles, withdrawals, payoutPoolAddress, bidAmount, gasLimit, sealedBlockCallback)
 }

@@ -60,21 +60,27 @@ func (b *beaconClient) postBeacon(u *url.URL, src any) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	buff := bytes.NewBuffer(nil)
-	enc := json.NewEncoder(buff)
-	if err := enc.Encode(src); err != nil {
-		return fmt.Errorf("fail to marshal block: %w", err)
+	// check if src is bytes or not
+	var src_bytes []byte
+	if _, ok := src.([]byte); !ok {
+		src_json, err := json.Marshal(src)
+		if err != nil {
+			return fmt.Errorf("could not marshal payload: %w", err)
+		}
+		src_bytes = src_json
+	} else {
+		src_bytes = src.([]byte)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), buff)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(src_bytes))
 	if err != nil {
-		return fmt.Errorf("fail to publish block: %w", err)
+		return fmt.Errorf("invalid request for %s: %w", u, err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("fail to publish block: %w", err)
+		return fmt.Errorf("fail to post request: %w", err)
 	}
 
 	if resp.StatusCode >= 300 {
@@ -84,7 +90,7 @@ func (b *beaconClient) postBeacon(u *url.URL, src any) error {
 		}{}
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return fmt.Errorf("fail to read read error response body: %w", err)
+			return fmt.Errorf("fail to read error response body: %w", err)
 		}
 
 		if err = json.Unmarshal(bodyBytes, ec); err != nil {

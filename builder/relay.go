@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -19,16 +18,14 @@ var ErrValidatorNotFound = errors.New("validator not found")
 
 const (
 	_RelayPathSubmitBlockBid = "/relay/v1/builder/blocks"
+	_RelayPathSubmitBlockBountyBid = "/relay/v1/builder/bounty_bids"
+	_RelayStatusPath         = "/eth/v1/builder/status"
 )
 
 type Relay struct {
 	endpoint          string
 	client            http.Client
 	PayOutPoolAddress string
-
-	validatorsLock       sync.RWMutex
-	validatorSyncOngoing bool
-	lastRequestedSlot    uint64
 }
 
 func NewRelay(endpoint string) (*Relay, error) {
@@ -54,20 +51,24 @@ func NewRelay(endpoint string) (*Relay, error) {
 		endpoint:             endpoint,
 		client:               http.Client{Timeout: time.Second},
 		PayOutPoolAddress:    payoutPoolAddress,
-		validatorSyncOngoing: false,
-		lastRequestedSlot:    0,
 	}
 
 	return r, nil
 }
 
-func (r *Relay) SubmitBlockBid(msg *builderTypes.BuilderBlockBid) (interface{}, error) {
+func (r *Relay) SubmitBlockBid(msg *builderTypes.BuilderBlockBid, bounty bool) (interface{}, error) {
 
 	msgbytes, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(context.Background(), "POST", r.endpoint+_RelayPathSubmitBlockBid, bytes.NewReader(msgbytes))
+	var url string
+	if bounty {
+		url = r.endpoint + _RelayPathSubmitBlockBountyBid
+	} else {
+		url = r.endpoint + _RelayPathSubmitBlockBid
+	}
+	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewReader(msgbytes))
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +104,7 @@ func (r *Relay) GetEndpoint() string {
 }
 
 func (r *Relay) CheckStatus() error {
-	req, err := http.NewRequestWithContext(context.Background(), "GET", r.endpoint, nil)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", r.endpoint + _RelayStatusPath, nil)
 	if err != nil {
 		return err
 	}

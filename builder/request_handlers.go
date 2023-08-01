@@ -17,15 +17,15 @@ import (
 	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
 )
 
-func (b *Builder) handlePrivateTransactions(w http.ResponseWriter, req *http.Request) {
-	payload := new(builderTypes.PrivateTransactionsPayload)
+func (b *Builder) handleBlockBid(w http.ResponseWriter, req *http.Request) {
+	payload := new(builderTypes.BuilderPayloadAttributes)
 	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 		fmt.Println("error decoding payload", err)
 		respondError(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
 
-	resp, err := b.OnPrivateTransactions(payload)
+	resp, err := b.ProcessBuilderBid(payload)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -39,7 +39,7 @@ func (b *Builder) handlePrivateTransactions(w http.ResponseWriter, req *http.Req
 	}
 }
 
-func (b *Builder) handleBlockBid(w http.ResponseWriter, req *http.Request) {
+func (b *Builder) handleBlockBountyBid(w http.ResponseWriter, req *http.Request) {
 	payload := new(builderTypes.BuilderPayloadAttributes)
 	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 		fmt.Println("error decoding payload", err)
@@ -47,7 +47,7 @@ func (b *Builder) handleBlockBid(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	resp, err := b.ProcessBuilderBid(payload)
+	resp, err := b.ProcessBuilderBountyBid(payload)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -75,7 +75,7 @@ func (b *Builder) handleBlindedBlockSubmission(w http.ResponseWriter, req *http.
 		return
 	}
 
-	log.Info("Blinded block submission request", "payloadMessage", *&payload.Message.Slot, "payloadSignature", payload.Signature)
+	log.Info("Blinded block submission request", "slot", *&payload.Message.Slot, "payloadSignature", payload.Signature)
 
 	executionPayload, err := b.SubmitBlindedBlock(*payload.Message, payload.Signature)
 	if err != nil {
@@ -83,12 +83,17 @@ func (b *Builder) handleBlindedBlockSubmission(w http.ResponseWriter, req *http.
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(executionPayload); err != nil {
-		respondError(w, http.StatusInternalServerError, "internal server error")
+	executionPayload_json, err := executionPayload.MarshalJSON()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(executionPayload_json)
+
+	return
 }
 
 func (b *Builder) handleStatus(w http.ResponseWriter, req *http.Request) {

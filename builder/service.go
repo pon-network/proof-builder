@@ -7,27 +7,30 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 
-	// "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/gorilla/mux"
 
+	"github.com/ethereum/go-ethereum/core"
+
 	beacon "github.com/ethereum/go-ethereum/builder/beacon"
-	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 	"github.com/ethereum/go-ethereum/builder/bls"
 	"github.com/ethereum/go-ethereum/builder/database"
 	httplogger "github.com/ethereum/go-ethereum/builder/httplogger"
 	RPBS "github.com/ethereum/go-ethereum/builder/rpbsService"
-	bbTypes "github.com/ethereum/go-ethereum/builder/types"
+
+	"github.com/ethereum/go-ethereum/builder/ethService"
+
+	"github.com/ethereum/go-ethereum/builder/builderRPC"
+	"github.com/ethereum/go-ethereum/builder/bundles"
 )
 
 const (
-	_PathCheckStatus         = "/eth/v1/builder/status"
-	_PathSubmitBlockBid      = "/eth/v1/builder/submit_block_bid"
-	_PathSubmitBlindedBlock  = "/eth/v1/builder/blinded_blocks"
-	_PathPrivateTransactions = "/eth/v1/builder/private_transactions"
+	_PathCheckStatus          = "/eth/v1/builder/status"
+	_PathSubmitBlockBid       = "/eth/v1/builder/submit_block_bid"
+	_PathSubmitBlockBountyBid = "/eth/v1/builder/submit_block_bounty_bid"
+	_PathSubmitBlindedBlock   = "/eth/v1/builder/blinded_blocks"
 
 	_PathIndex = "/eth/v1/builder/"
 )
@@ -42,6 +45,12 @@ func (s *Service) Start() error {
 		log.Info("PoN Builder Service started", "endpoint", s.srv.Addr)
 		go s.srv.ListenAndServe()
 	}
+
+	err := s.builder.Start()
+	if err != nil {
+		return fmt.Errorf("PoN Builder Service failed to start: %w", err)
+	}
+
 	return nil
 }
 
@@ -59,8 +68,8 @@ func getRouter(builder IBuilder) http.Handler {
 	router.HandleFunc(_PathIndex, builder.handleIndex).Methods(http.MethodGet)
 	router.HandleFunc(_PathCheckStatus, builder.handleStatus).Methods(http.MethodGet)
 	router.HandleFunc(_PathSubmitBlockBid, builder.handleBlockBid).Methods(http.MethodPost)
+	router.HandleFunc(_PathSubmitBlockBountyBid, builder.handleBlockBountyBid).Methods(http.MethodPost)
 	router.HandleFunc(_PathSubmitBlindedBlock, builder.handleBlindedBlockSubmission).Methods(http.MethodPost)
-	router.HandleFunc(_PathPrivateTransactions, builder.handlePrivateTransactions).Methods(http.MethodPost)
 
 	loggedRouter := httplogger.LoggingMiddleware(router)
 	return loggedRouter
@@ -72,12 +81,6 @@ func NewService(listenAddr string, builder IBuilder) *Service {
 		srv: &http.Server{
 			Addr:    listenAddr,
 			Handler: getRouter(builder),
-			/*
-			   ReadTimeout:
-			   ReadHeaderTimeout:
-			   WriteTimeout:
-			   IdleTimeout:
-			*/
 		},
 		builder: builder,
 	}
@@ -91,13 +94,13 @@ func Register(stack *node.Node, backend *eth.Ethereum, cfg *Config) error {
 	if cfg.RelayEndpoint != "" {
 		relay, err = NewRelay(cfg.RelayEndpoint)
 		if err != nil {
-			return fmt.Errorf("failed to create remote relay: %w", err)
+			return fmt.Errorf("Relay to create relay: %w", err)
 		}
 	} else {
-		return fmt.Errorf("PoN Relay not specified: %w", errors.New("no relay specified"))
+		return fmt.Errorf("Relay not specified: %w", errors.New("no relay specified"))
 	}
 
-	ethereumService := NewEthService(backend)
+	ethereumService := ethService.NewEthService(backend)
 
 	rpbsService := RPBS.NewRPBSService(cfg.RPBS)
 
@@ -105,19 +108,6 @@ func Register(stack *node.Node, backend *eth.Ethereum, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to create multi beacon client: %w", err)
 	}
-	go beaconClient.Start()
-
-	genesisInfo, err := beaconClient.Genesis()
-	if err != nil {
-		return fmt.Errorf("failed to get genesis info: %w", err)
-	}
-	log.Info("genesis info:",
-		"genesisTime", genesisInfo.GenesisTime,
-		"genesisForkVersion", genesisInfo.GenesisForkVersion,
-		"genesisValidatorsRoot", genesisInfo.GenesisValidatorsRoot)
-
-	cfg.GenesisForkVersion = genesisInfo.GenesisForkVersion
-	bbTypes.GENESIS_TIME = genesisInfo.GenesisTime
 
 	envBuilderSkBytes, err := hexutil.Decode(cfg.BuilderSecretKey)
 	if err != nil {
@@ -127,13 +117,6 @@ func Register(stack *node.Node, backend *eth.Ethereum, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("incorrect builder API secret key provided: %w", err)
 	}
-	genesisForkVersionBytes, err := hexutil.Decode(cfg.GenesisForkVersion)
-	if err != nil {
-		return fmt.Errorf("invalid genesisForkVersion: %w", err)
-	}
-	var genesisForkVersion [4]byte
-	copy(genesisForkVersion[:], genesisForkVersionBytes[:4])
-	builderSigningDomain := bbTypes.ComputeDomain(bbTypes.DomainTypeAppBuilder, genesisForkVersion, commonTypes.Root{})
 
 	var db *database.DatabaseService = nil
 	if cfg.MetricsEnabled {
@@ -143,7 +126,22 @@ func Register(stack *node.Node, backend *eth.Ethereum, cfg *Config) error {
 		}
 	}
 
-	builderBackend, err := NewBuilder(builderSk, beaconClient, relay, builderSigningDomain, ethereumService, rpbsService, db, cfg)
+	var builderBundleService *bundles.BundleService = nil
+	if cfg.BundlesEnabled {
+		builderBundleService, err = bundles.NewBundleService(cfg.DatabaseDir, cfg.BundlesReset, uint64(cfg.BundlesMaxLifetime), uint64(cfg.BundlesMaxFuture), backend, cfg.BuilderWalletPrivateKey, beaconClient)
+		if err != nil {
+			return fmt.Errorf("failed to create bundle service: %w", err)
+		}
+	}
+
+	builderRPCService, err := builderRPC.NewBuilderRPCService(cfg.DatabaseDir, stack, ethereumService, builderBundleService)
+	if err != nil {
+		return fmt.Errorf("failed to create builder RPC service: %w", err)
+	}
+
+	blockValidator := core.NewBlockValidator(backend.BlockChain().Config(), backend.BlockChain(), backend.Engine())
+
+	builderBackend, err := NewBuilder(builderSk, blockValidator, beaconClient, relay, ethereumService, rpbsService, builderRPCService, builderBundleService, db, cfg)
 	if err != nil {
 		return err
 	}
@@ -151,16 +149,6 @@ func Register(stack *node.Node, backend *eth.Ethereum, cfg *Config) error {
 	builderService := NewService(cfg.ListenAddr, builderBackend)
 
 	log.Info("PoN Builder service registered", "listenAddr", cfg.ListenAddr)
-
-	stack.RegisterAPIs([]rpc.API{
-		{
-			Namespace:     "pon-builder",
-			Version:       "1.0",
-			Service:       builderService,
-			Public:        true,
-			Authenticated: true,
-		},
-	})
 
 	stack.RegisterLifecycle(builderService)
 

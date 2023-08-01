@@ -1,9 +1,5 @@
 package database
 
-import (
-	// "time"
-)
-
 func (s *DatabaseService) InsertBeaconBlock(signedBeaconBlock SignedBeaconBlockSubmissionEntry, blockHash string) error {
 	// Find the block bid for the given block hash
 	var blockBid BuilderBlockBidEntry
