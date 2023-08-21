@@ -1,6 +1,8 @@
 package database
 
 import (
+	"context"
+	"time"
 	"os"
 	"path/filepath"
 
@@ -41,6 +43,9 @@ func NewDatabaseService(dirPath string, reset bool) (*DatabaseService, error) {
 	db.MustExec(vars.CreateSchema)
 
 	dbService := &DatabaseService{DB: db}
+
+	go dbService.CleanOldData()
+
 	return dbService, err
 }
 
@@ -48,3 +53,22 @@ func NewDatabaseService(dirPath string, reset bool) (*DatabaseService, error) {
 func (s *DatabaseService) Close() error {
 	return s.DB.Close()
 }
+
+func (s *DatabaseService) CleanOldData() error {
+
+	ticker := time.NewTicker(24 * time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	
+	for {
+		select {
+		case <-ticker.C:
+			s.DB.MustExec(vars.CleanOldData)
+		case <-ctx.Done():
+			ticker.Stop()
+			return ctx.Err()
+		}
+	}
+}
+
+

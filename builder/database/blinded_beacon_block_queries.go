@@ -1,12 +1,15 @@
 package database
 
 import (
+	"fmt"
+	bbTypes "github.com/ethereum/go-ethereum/builder/types"
+	"math/big"
 	"time"
 )
 
 func (s *DatabaseService) InsertBlindedBeaconBlock(signedBlindedBeaconBlock SignedBlindedBeaconBlockEntry, blockHash string) error {
 	// Find the block bid for the given block hash
-	var blockBid BuilderBlockBidEntry
+	var blockBid BuilderBlockBidEntryLoader
 	err := s.DB.Get(&blockBid, `SELECT * FROM blockbid WHERE block_hash = ?`, blockHash)
 	if err != nil {
 		return err
@@ -30,8 +33,8 @@ func (s *DatabaseService) InsertBlindedBeaconBlock(signedBlindedBeaconBlock Sign
 }
 
 func (s *DatabaseService) GetBlockBidsWonPaginated(page int, pageSize int) ([]BuilderBlockBidEntry, error) {
-	var blockBids []BuilderBlockBidEntry
-	err := s.DB.Select(&blockBids, `
+	var loadedBlockBids []BuilderBlockBidEntryLoader
+	err := s.DB.Select(&loadedBlockBids, `
 		SELECT blockbid.*
 		FROM blockbid
 		JOIN blindedbeaconblock ON blockbid.id = blindedbeaconblock.bid_id
@@ -41,9 +44,19 @@ func (s *DatabaseService) GetBlockBidsWonPaginated(page int, pageSize int) ([]Bu
 	if err != nil {
 		return nil, err
 	}
-	return blockBids, nil
-}
 
+	blockBids := make([]BuilderBlockBidEntry, len(loadedBlockBids))
+	for i, loadedBlockBid := range loadedBlockBids {
+		bidEntry, err := loadedBlockBid.ToBuilderBlockBidEntry()
+		if err != nil {
+			return nil, err
+		}
+		blockBids[i] = bidEntry
+	}
+
+	return blockBids, nil
+
+}
 
 // Winning bids are block bids that have a corresponding signed blinded beacon block. Do so by joining the two tables and counting the number of rows.
 func (s *DatabaseService) CountTotalBlockBidsWon() (uint64, error) {
@@ -55,35 +68,53 @@ func (s *DatabaseService) CountTotalBlockBidsWon() (uint64, error) {
 	return count, nil
 }
 
-
-func (s *DatabaseService) ComputeTotalBlockBidsWonBidAmount() (float64, error) {
-	var count float64
-	err := s.DB.Get(&count, `SELECT SUM(value) FROM blockbid JOIN blindedbeaconblock ON blockbid.id = blindedbeaconblock.bid_id`)
+func (s *DatabaseService) ComputeTotalBlockBidsWonBidAmount() (*big.Int, error) {
+	var total big.Int
+	var totalString string
+	err := s.DB.Get(&totalString, `SELECT COALESCE(TOTAL(value), 0) FROM blockbid JOIN blindedbeaconblock ON blockbid.id = blindedbeaconblock.bid_id`)
 	if err != nil {
-		return 0, err
+		return big.NewInt(0), err
 	}
-	return count, nil
+	totalString, err = bbTypes.ConvertScientificToDecimal(totalString)
+	if err != nil {
+		return big.NewInt(0), err
+	}
+	_, ok := total.SetString(totalString, 10)
+	if !ok {
+		return big.NewInt(0), fmt.Errorf("could not convert string to big.Int")
+	}
+	return &total, nil
 }
 
-
-func (s *DatabaseService) ComputeTotalBlockBidsWonMEV() (float64, error) {
-	var count float64
-	err := s.DB.Get(&count, `SELECT SUM(mev) FROM blockbid JOIN blindedbeaconblock ON blockbid.id = blindedbeaconblock.bid_id`)
+func (s *DatabaseService) ComputeTotalBlockBidsWonMEV() (*big.Int, error) {
+	var total big.Int
+	var totalString string
+	err := s.DB.Get(&totalString, `SELECT COALESCE(TOTAL(mev), 0) FROM blockbid JOIN blindedbeaconblock ON blockbid.id = blindedbeaconblock.bid_id`)
 	if err != nil {
-		return 0, err
+		return big.NewInt(0), err
 	}
-	return count, nil
+
+	totalString, err = bbTypes.ConvertScientificToDecimal(totalString)
+	if err != nil {
+		return big.NewInt(0), err
+	}
+
+	_, ok := total.SetString(totalString, 10)
+	if !ok {
+		return big.NewInt(0), fmt.Errorf("could not convert string to big.Int")
+	}
+	return &total, nil
 }
 
-func (s *DatabaseService) ComputeTotalBlockBidsWonBidAmountGroupByMonth(from time.Time, to time.Time, dataLabels []string) ([]float64, error) {
+func (s *DatabaseService) ComputeTotalBlockBidsWonBidAmountGroupByMonth(from time.Time, to time.Time, dataLabels []string) ([]*big.Int, error) {
 
-	amounts := make(map[string]float64)
+	amounts := make(map[string]*big.Int)
 
 	rows, err := s.DB.Query(`
-		SELECT SUM(value) as avg_value, strftime('%Y-%m', inserted_at) as month
-		FROM blockbid
-		JOIN blindedbeaconblock ON blockbid.id = blindedbeaconblock.bid_id
-		WHERE inserted_at BETWEEN $1 AND $2
+		SELECT COALESCE(TOTAL(value), 0) as total_value, strftime('%Y-%m', bb.inserted_at) as month
+		FROM blockbid bb
+		JOIN blindedbeaconblock bbb ON bb.id = bbb.bid_id
+		WHERE bb.inserted_at BETWEEN $1 AND $2
 		GROUP BY month
 		ORDER BY month DESC
 	`, from, to)
@@ -93,39 +124,49 @@ func (s *DatabaseService) ComputeTotalBlockBidsWonBidAmountGroupByMonth(from tim
 	defer rows.Close()
 
 	for rows.Next() {
-		var avgValue float64
+		var totalValue big.Int
+		var totalValueString string
 		var month string
-		if err := rows.Scan(&avgValue, &month); err != nil {
+		if err := rows.Scan(&totalValueString, &month); err != nil {
 			return nil, err
 		}
-		amounts[month] = avgValue
+		totalValueString, err = bbTypes.ConvertScientificToDecimal(totalValueString)
+		if err != nil {
+			return nil, err
+		}
+
+		_, ok := totalValue.SetString(totalValueString, 10)
+		if !ok {
+			return nil, fmt.Errorf("could not convert string to big.Int")
+		}
+		amounts[month] = &totalValue
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	var amountValues []float64
+	var amountValues []*big.Int
 	for i := 0; i < len(dataLabels); i++ {
 		month := from.AddDate(0, i, 0).Format("2006-01")
 		if value, ok := amounts[month]; ok {
 			amountValues = append(amountValues, value)
 		} else {
-			amountValues = append(amountValues, 0)
+			amountValues = append(amountValues, big.NewInt(0))
 		}
 	}
 
 	return amountValues, nil
 }
 
-func (s *DatabaseService) ComputeTotalBlockBidsWonMEVGroupByMonth(from time.Time, to time.Time, dataLabels []string) ([]float64, error) {
-	
-	amounts := make(map[string]float64)
+func (s *DatabaseService) ComputeTotalBlockBidsWonMEVGroupByMonth(from time.Time, to time.Time, dataLabels []string) ([]*big.Int, error) {
+
+	amounts := make(map[string]*big.Int)
 
 	rows, err := s.DB.Query(`
-		SELECT SUM(mev) as avg_value, strftime('%Y-%m', inserted_at) as month
-		FROM blockbid
-		JOIN blindedbeaconblock ON blockbid.id = blindedbeaconblock.bid_id
-		WHERE inserted_at BETWEEN $1 AND $2
+		SELECT COALESCE(TOTAL(mev), 0) as total_value, strftime('%Y-%m', bb.inserted_at) as month
+		FROM blockbid bb
+		JOIN blindedbeaconblock bbb ON bb.id = bbb.bid_id
+		WHERE bb.inserted_at BETWEEN $1 AND $2
 		GROUP BY month
 		ORDER BY month DESC
 	`, from, to)
@@ -135,24 +176,35 @@ func (s *DatabaseService) ComputeTotalBlockBidsWonMEVGroupByMonth(from time.Time
 	defer rows.Close()
 
 	for rows.Next() {
-		var totalMEV float64
+		var totalMEV big.Int
+		var totalMEVString string
 		var month string
-		if err := rows.Scan(&totalMEV, &month); err != nil {
+		if err := rows.Scan(&totalMEVString, &month); err != nil {
 			return nil, err
 		}
-		amounts[month] = totalMEV
+
+		totalMEVString, err = bbTypes.ConvertScientificToDecimal(totalMEVString)
+		if err != nil {
+			return nil, err
+		}
+
+		_, ok := totalMEV.SetString(totalMEVString, 10)
+		if !ok {
+			return nil, fmt.Errorf("could not convert string to big.Int")
+		}
+		amounts[month] = &totalMEV
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	var TotalMEVs []float64
+	var TotalMEVs []*big.Int
 	for i := 0; i < len(dataLabels); i++ {
 		month := from.AddDate(0, i, 0).Format("2006-01")
 		if value, ok := amounts[month]; ok {
 			TotalMEVs = append(TotalMEVs, value)
 		} else {
-			TotalMEVs = append(TotalMEVs, 0)
+			TotalMEVs = append(TotalMEVs, big.NewInt(0))
 		}
 	}
 
@@ -160,14 +212,14 @@ func (s *DatabaseService) ComputeTotalBlockBidsWonMEVGroupByMonth(from time.Time
 }
 
 func (s *DatabaseService) CountTotalBidsWonGroupByMonth(from time.Time, to time.Time, dataLabels []string) ([]uint64, error) {
-	
+
 	count := make(map[string]uint64)
 
 	rows, err := s.DB.Query(`
-		SELECT COUNT(*) as bids, strftime('%Y-%m', inserted_at) as month
-		FROM blockbid
-		JOIN blindedbeaconblock ON blockbid.id = blindedbeaconblock.bid_id
-		WHERE inserted_at BETWEEN $1 AND $2
+		SELECT COUNT(*) as bids, strftime('%Y-%m', bb.inserted_at) as month
+		FROM blockbid bb
+		JOIN blindedbeaconblock bbb ON bb.id = bbb.bid_id
+		WHERE bb.inserted_at BETWEEN $1 AND $2
 		GROUP BY month
 		ORDER BY month DESC
 	`, from, to)

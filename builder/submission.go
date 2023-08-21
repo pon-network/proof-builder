@@ -20,7 +20,6 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/miner"
 
 	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
 	bundleTypes "github.com/bsn-eng/pon-golang-types/bundles"
@@ -32,9 +31,9 @@ import (
 	"github.com/ethereum/go-ethereum/builder/database"
 )
 
-func (b *Builder) slotSubmitter(startTime time.Time, deadline time.Time, slot uint64, blockNumber uint64, proposerPubkey commonTypes.PublicKey, channel chan blockProperties, bidComplete chan struct{ bidAmount uint64 }, bountyComplete chan struct{ bidAmount uint64 }, submissionErr *error) {
+func (b *Builder) slotSubmitter(startTime time.Time, deadline time.Time, slot uint64, blockNumber uint64, proposerPubkey commonTypes.PublicKey, channel chan blockProperties, bidComplete chan struct{ bidAmount *big.Int }, bountyComplete chan struct{ bidAmount *big.Int }, submissionErr *error) {
 
-	var headEventCh = make(chan core.ChainHeadEvent, 1)
+	var headEventCh = make(chan core.ChainHeadEvent, 64)
 	subscription := b.eth.Backend().APIBackend.SubscribeChainHeadEvent(headEventCh)
 
 	endTimer := time.NewTimer(time.Until(deadline))
@@ -79,10 +78,11 @@ submitter:
 
 				// Check if we have already submitted a bounty block for this slot
 				b.slotSubmissionsLock.Lock()
-				if b.slotBountyAmount[slot] > 0 {
+				if b.slotBountyAmount[slot] != nil && b.slotBountyAmount[slot].Sign() > 0 {
 					b.slotSubmissionsLock.Unlock()
 					continue submitter
 				}
+				b.slotSubmissionsLock.Unlock()
 
 				b.slotBountyMu.Lock()
 				allAttrs, ok := b.slotBountyAttrs[slot]
@@ -152,10 +152,10 @@ submitter:
 				b.slotSubmissions[slot] = append(b.slotSubmissions[slot], finalizedBid)
 				if blockProps.bountyBid {
 					b.slotBountyAmount[slot] = finalizedBid.BlockBid.Message.Value
-					bountyComplete <- struct{ bidAmount uint64 }{finalizedBid.BlockBid.Message.Value}
+					bountyComplete <- struct{ bidAmount *big.Int }{finalizedBid.BlockBid.Message.Value}
 				} else {
 					b.slotBidAmounts[slot] = append(b.slotBidAmounts[slot], finalizedBid.BlockBid.Message.Value)
-					bidComplete <- struct{ bidAmount uint64 }{finalizedBid.BlockBid.Message.Value}
+					bidComplete <- struct{ bidAmount *big.Int }{finalizedBid.BlockBid.Message.Value}
 				}
 			}
 			b.slotSubmissionsLock.Unlock()
@@ -209,7 +209,7 @@ submitter:
 					finalizedBid.BlockBuiltTime = pendingBlock.builtTime
 					b.slotSubmissions[slot] = append(b.slotSubmissions[slot], finalizedBid)
 					b.slotBidAmounts[slot] = append(b.slotBidAmounts[slot], finalizedBid.BlockBid.Message.Value)
-					bidComplete <- struct{ bidAmount uint64 }{finalizedBid.BlockBid.Message.Value}
+					bidComplete <- struct{ bidAmount *big.Int }{finalizedBid.BlockBid.Message.Value}
 					pendingBlock = blockProperties{}
 				}
 				b.slotSubmissionsLock.Unlock()
@@ -228,12 +228,12 @@ submitter:
 			}
 			// Get most recent bounty block bid attributes for this slot
 			attrs := slotBountyAttrs[len(slotBountyAttrs)-1]
-			b.slotMu.Unlock()
+			b.slotBountyMu.Unlock()
 
 			// Check slot submissions if there has already been a successful bounty
 			// submission for this slot
 			b.slotSubmissionsLock.Lock()
-			if b.slotBountyAmount[slot] > 0 {
+			if b.slotBountyAmount[slot] != nil && b.slotBountyAmount[slot].Sign() > 0 {
 				b.slotSubmissionsLock.Unlock()
 				continue submitter
 			}
@@ -254,7 +254,7 @@ submitter:
 					finalizedBid.BlockBuiltTime = pendingBlock.builtTime
 					b.slotSubmissions[slot] = append(b.slotSubmissions[slot], finalizedBid)
 					b.slotBountyAmount[slot] = finalizedBid.BlockBid.Message.Value
-					bountyComplete <- struct{ bidAmount uint64 }{finalizedBid.BlockBid.Message.Value}
+					bountyComplete <- struct{ bidAmount *big.Int }{finalizedBid.BlockBid.Message.Value}
 					pendingBountyBlock = blockProperties{}
 				}
 				b.slotSubmissionsLock.Unlock()
@@ -292,8 +292,6 @@ submitter:
 	b.slotSubmissionsLock.Unlock()
 
 	log.Info("Stopped slot submitter", "slot", slot)
-
-	return
 
 }
 
@@ -444,7 +442,7 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 		return builderTypes.BlockBidResponse{}, err
 	}
 
-	// ECDSA signature over the signature of the block bid message
+	// ECDSA signature over the block bid message
 	ecdsa_signature, err := crypto.Sign(blockBidMsgBytes[:], b.builderWalletPrivateKey)
 	if err != nil {
 		log.Error("Could not ECDSA sign block bid message sig", "err", err)
@@ -517,24 +515,24 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 		blockBidEntry := database.BuilderBlockBidEntry{
 			InsertedAt:                time.Now(),
 			Signature:                 signature.String(),
-			Slot:                      attrs.Slot,
+			Slot:                      *big.NewInt(int64(attrs.Slot)),
 			BuilderPubkey:             b.builderPublicKey.String(),
 			ProposerPubkey:            proposerPubkey.String(),
 			FeeRecipient:              attrs.SuggestedFeeRecipient.String(),
-			GasLimit:                  executableData.GasLimit,
-			GasUsed:                   executableData.GasUsed,
-			MEV:                       blockFees.Uint64(),
+			GasLimit:                  *big.NewInt(int64(executableData.GasLimit)),
+			GasUsed:                   *big.NewInt(int64(executableData.GasUsed)),
+			MEV:                       *blockFees,
 			PayoutPoolTx:              hexutil.Encode(payoutPoolTx),
 			PayoutPoolAddress:         b.relay.GetPayoutAddress().String(),
-			PayoutPoolGasFee:          miner.PaymentTxGas,
+			PayoutPoolGasFee:          *big.NewInt(int64(b.eth.GetPayoutPoolTxGas())),
 			RPBS:                      string(rpbs_json),
 			PriorityTransactionsCount: uint64(len(attrs.Transactions)),
 			TransactionsCount:         uint64(len(executableData.Transactions)),
 			BlockHash:                 block.Hash().String(),
 			ParentHash:                executionPayloadHeader.ParentHash.String(),
-			BlockNumber:               executionPayloadHeader.Number.Uint64(),
+			BlockNumber:               *executionPayloadHeader.Number,
 			RelayResponse:             string(submissionResp_string),
-			Value:                     big.NewInt(int64(attrs.BidAmount)).Uint64(),
+			Value:                     *attrs.BidAmount,
 		}
 		go b.db.InsertBlockBid(blockBidEntry)
 	}

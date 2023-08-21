@@ -20,8 +20,7 @@ import (
 func (b *Builder) handleBlockBid(w http.ResponseWriter, req *http.Request) {
 	payload := new(builderTypes.BuilderPayloadAttributes)
 	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-		fmt.Println("error decoding payload", err)
-		respondError(w, http.StatusBadRequest, "invalid payload")
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("invalid payload: %v", err))
 		return
 	}
 
@@ -42,8 +41,7 @@ func (b *Builder) handleBlockBid(w http.ResponseWriter, req *http.Request) {
 func (b *Builder) handleBlockBountyBid(w http.ResponseWriter, req *http.Request) {
 	payload := new(builderTypes.BuilderPayloadAttributes)
 	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-		fmt.Println("error decoding payload", err)
-		respondError(w, http.StatusBadRequest, "invalid payload")
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("invalid payload: %v", err))
 		return
 	}
 
@@ -65,8 +63,7 @@ func (b *Builder) handleBlindedBlockSubmission(w http.ResponseWriter, req *http.
 
 	payload := new(capellaApi.SignedBlindedBeaconBlock)
 	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-		fmt.Println("error decoding payload", err)
-		respondError(w, http.StatusBadRequest, "invalid payload")
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("invalid payload: %v", err))
 		return
 	}
 
@@ -75,7 +72,7 @@ func (b *Builder) handleBlindedBlockSubmission(w http.ResponseWriter, req *http.
 		return
 	}
 
-	log.Info("Blinded block submission request", "slot", *&payload.Message.Slot, "payloadSignature", payload.Signature)
+	log.Info("Blinded block submission request", "slot", payload.Message.Slot, "payloadSignature", payload.Signature)
 
 	executionPayload, err := b.SubmitBlindedBlock(*payload.Message, payload.Signature)
 	if err != nil {
@@ -93,7 +90,6 @@ func (b *Builder) handleBlindedBlockSubmission(w http.ResponseWriter, req *http.
 	w.WriteHeader(http.StatusOK)
 	w.Write(executionPayload_json)
 
-	return
 }
 
 func (b *Builder) handleStatus(w http.ResponseWriter, req *http.Request) {
@@ -108,13 +104,13 @@ func (b *Builder) handleStatus(w http.ResponseWriter, req *http.Request) {
 func (b *Builder) handleIndex(w http.ResponseWriter, req *http.Request) {
 
 	type bidData struct {
-		Slot           uint64
+		Slot           string
 		SentAt         string
 		MEV            string
 		BidAmount      string
 		BlockHash      string
-		PrivateTxCount uint64
-		TotalTxCount   uint64
+		PrivateTxCount string
+		TotalTxCount   string
 	}
 
 	indexTemplate, err := parseIndexTemplate()
@@ -157,7 +153,7 @@ func (b *Builder) handleIndex(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		log.Error("Error getting total bids won value", "error", err)
 	}
-	winningBidsBidAmountBigFloat := new(big.Float).SetFloat64(winningBidsBidAmountBig)
+	winningBidsBidAmountBigFloat := new(big.Float).SetInt(winningBidsBidAmountBig)
 	winningBidsBidAmountBigFloat = new(big.Float).Quo(winningBidsBidAmountBigFloat, big.NewFloat(params.Ether))
 	rounded := fmt.Sprintf("%.8f", winningBidsBidAmountBigFloat)
 	winningBidsBidAmount, _ = strconv.ParseFloat(rounded, 64)
@@ -167,7 +163,10 @@ func (b *Builder) handleIndex(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		log.Error("Error getting total bids won MEV", "error", err)
 	}
-	winningBidsMEVBigFloat := new(big.Float).SetFloat64(winningBidsMEVBig)
+	winningBidsMEVBigFloat, ok := new(big.Float).SetString(winningBidsMEVBig.String())
+	if !ok {
+		log.Error("Error converting big.Int to big.Float", "error", err)
+	}
 	winningBidsMEVBigFloat = new(big.Float).Quo(winningBidsMEVBigFloat, big.NewFloat(params.Ether))
 	rounded = fmt.Sprintf("%.8f", winningBidsMEVBigFloat)
 	winningBidsMEV, _ = strconv.ParseFloat(rounded, 64)
@@ -205,49 +204,49 @@ func (b *Builder) handleIndex(w http.ResponseWriter, req *http.Request) {
 		month5Ago.Hour(), month5Ago.Minute(), month5Ago.Second(), month5Ago.Nanosecond(),
 		month5Ago.Location())
 
-	var avgBidMonthly []float64
-	avgBidMonthly, err = b.db.ComputeAverageBidAmountGroupByMonth(month5Ago, now, chartLabels)
+	avgBidMonthlyBigFloat, err := b.db.ComputeAverageBidAmountGroupByMonth(month5Ago, now, chartLabels)
+	var avgBidMonthly []float64 = make([]float64, len(avgBidMonthlyBigFloat))
 	if err != nil {
 		log.Error("Error getting average bid amount", "error", err)
 	}
-	for i, v := range avgBidMonthly {
-		avgBid := new(big.Float).SetFloat64(v)
+	for i, v := range avgBidMonthlyBigFloat {
+		avgBid := v
 		avgBid = new(big.Float).Quo(avgBid, big.NewFloat(params.Ether))
 		rounded := fmt.Sprintf("%.8f", avgBid)
 		avgBidMonthly[i], _ = strconv.ParseFloat(rounded, 64)
 	}
 
-	var avgMEVMonthly []float64
-	avgMEVMonthly, err = b.db.ComputeAverageMEVGroupByMonth(month5Ago, now, chartLabels)
+	avgMEVMonthlyBigFloat, err := b.db.ComputeAverageMEVGroupByMonth(month5Ago, now, chartLabels)
+	var avgMEVMonthly []float64 = make([]float64, len(avgMEVMonthlyBigFloat))
 	if err != nil {
 		log.Error("Error getting average MEV", "error", err)
 	}
-	for i, v := range avgMEVMonthly {
-		avgMEV := new(big.Float).SetFloat64(v)
+	for i, v := range avgMEVMonthlyBigFloat {
+		avgMEV := v
 		avgMEV = new(big.Float).Quo(avgMEV, big.NewFloat(params.Ether))
 		rounded := fmt.Sprintf("%.8f", avgMEV)
 		avgMEVMonthly[i], _ = strconv.ParseFloat(rounded, 64)
 	}
 
-	var bidsWonTotalBidAmountMonthly []float64
-	bidsWonTotalBidAmountMonthly, err = b.db.ComputeTotalBlockBidsWonBidAmountGroupByMonth(month5Ago, now, chartLabels)
+	bidsWonSumBidAmountMonthly, err := b.db.ComputeTotalBlockBidsWonBidAmountGroupByMonth(month5Ago, now, chartLabels)
+	var bidsWonTotalBidAmountMonthly []float64 = make([]float64, len(bidsWonSumBidAmountMonthly))
 	if err != nil {
 		log.Error("Error getting bids won total bid amount monthly", "error", err)
 	}
-	for i, v := range bidsWonTotalBidAmountMonthly {
-		totalBidAmount := new(big.Float).SetFloat64(v)
+	for i, v := range bidsWonSumBidAmountMonthly {
+		totalBidAmount := new(big.Float).SetInt(v)
 		totalBidAmount = new(big.Float).Quo(totalBidAmount, big.NewFloat(params.Ether))
 		rounded := fmt.Sprintf("%.8f", totalBidAmount)
 		bidsWonTotalBidAmountMonthly[i], _ = strconv.ParseFloat(rounded, 64)
 	}
 
-	var bidsWonTotalMEVMonthly []float64
-	bidsWonTotalMEVMonthly, err = b.db.ComputeTotalBlockBidsWonMEVGroupByMonth(month5Ago, now, chartLabels)
+	bidsWonSumMEVMonthly, err := b.db.ComputeTotalBlockBidsWonMEVGroupByMonth(month5Ago, now, chartLabels)
+	var bidsWonTotalMEVMonthly []float64 = make([]float64, len(bidsWonSumMEVMonthly))
 	if err != nil {
 		log.Error("Error getting bids won total MEV monthly", "error", err)
 	}
-	for i, v := range bidsWonTotalMEVMonthly {
-		totalMEV := new(big.Float).SetFloat64(v)
+	for i, v := range bidsWonSumMEVMonthly {
+		totalMEV := new(big.Float).SetInt(v)
 		totalMEV = new(big.Float).Quo(totalMEV, big.NewFloat(params.Ether))
 		rounded := fmt.Sprintf("%.8f", totalMEV)
 		bidsWonTotalMEVMonthly[i], _ = strconv.ParseFloat(rounded, 64)
@@ -268,40 +267,40 @@ func (b *Builder) handleIndex(w http.ResponseWriter, req *http.Request) {
 	var allBidsData []bidData
 	for _, bid := range allBids {
 		// MEV and Value need to be converted from wei to eth
-		mevVal := new(big.Float).SetUint64(bid.MEV)
+		mevVal := new(big.Float).SetInt(&bid.MEV)
 		mevVal.Quo(mevVal, big.NewFloat(params.Ether))
 
-		bidVal := new(big.Float).SetUint64(bid.Value)
+		bidVal := new(big.Float).SetInt(&bid.Value)
 		bidVal.Quo(bidVal, big.NewFloat(params.Ether))
 
 		allBidsData = append(allBidsData, bidData{
-			bid.Slot,
+			bid.Slot.String(),
 			bid.InsertedAt.Format("2006-01-02 15:04:05"),
 			fmt.Sprintf("%.8f", mevVal),
 			fmt.Sprintf("%.8f", bidVal),
 			bid.BlockHash,
-			bid.PriorityTransactionsCount,
-			bid.TransactionsCount,
+			strconv.FormatUint(bid.PriorityTransactionsCount, 10),
+			strconv.FormatUint(bid.TransactionsCount, 10),
 		})
 	}
 
 	var recentBidsWonData []bidData
 	for _, bid := range recentBidsWon {
 		// MEV and Value need to be converted from wei to eth
-		mevVal := new(big.Float).SetUint64(bid.MEV)
+		mevVal := new(big.Float).SetInt(&bid.MEV)
 		mevVal.Quo(mevVal, big.NewFloat(params.Ether))
 
-		bidVal := new(big.Float).SetUint64(bid.Value)
+		bidVal := new(big.Float).SetInt(&bid.Value)
 		bidVal.Quo(bidVal, big.NewFloat(params.Ether))
 
 		recentBidsWonData = append(recentBidsWonData, bidData{
-			bid.Slot,
+			bid.Slot.String(),
 			bid.InsertedAt.Format("2006-01-02 15:04:05"),
 			fmt.Sprintf("%.8f", mevVal),
 			fmt.Sprintf("%.8f", bidVal),
 			bid.BlockHash,
-			bid.PriorityTransactionsCount,
-			bid.TransactionsCount,
+			strconv.FormatUint(bid.PriorityTransactionsCount, 10),
+			strconv.FormatUint(bid.TransactionsCount, 10),
 		})
 	}
 

@@ -79,7 +79,6 @@ const (
 	// staleThreshold is the maximum depth of the acceptable stale block.
 	staleThreshold = 7
 
-	PaymentTxGas = 2000000
 )
 
 var (
@@ -977,7 +976,7 @@ type generateParams struct {
 	transactions      [][]byte                    // List of required transactions to include in block.
 	bundles           []bundleTypes.BuilderBundle //List of required bundles to include in block.
 	payoutPoolAddress common.Address              // The payout transaction bytes for the block bid transaction.
-	bidAmount         uint64                      // The bid amount for the block.
+	bidAmount         *big.Int                      // The bid amount for the block.
 }
 
 // prepareWork constructs the sealing task according to the given parameters,
@@ -1020,7 +1019,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 		Coinbase:   genParams.coinbase,
 	}
 	// Set the extra field.
-	if genParams.bidAmount != 0 {
+	if genParams.bidAmount != nil && genParams.bidAmount.Sign() > 0 {
 		header.Extra = []byte(builderTypes.BUILDER_VERSIONED_NAME) 
 	} else if len(w.extra) != 0 {
 		header.Extra = w.extra
@@ -1101,9 +1100,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, par
 	}
 
 	if params != nil {
-		if params.bidAmount > 0 {
+		if params.bidAmount != nil && params.bidAmount.Sign() > 0 {
 			// Create room in the gas pool for the payment transaction.
-			if err := env.gasPool.SubGas(uint64(PaymentTxGas)); err != nil {
+			if err := env.gasPool.SubGas(w.config.BuilderPayoutPoolTxGas); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -1258,17 +1257,17 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, par
 	var txBytes []byte = nil
 
 	if params != nil {
-		if params.bidAmount > 0 {
+		if params.bidAmount != nil && params.bidAmount.Sign() > 0 {
 
 			log.Info("Creating payout pool transaction", "bidAmount", params.bidAmount, "payoutPoolAddress", params.payoutPoolAddress.Hex())
 
-			env.gasPool.AddGas(uint64(PaymentTxGas))
+			env.gasPool.AddGas(w.config.BuilderPayoutPoolTxGas)
 
 			builderWalletBalance := env.state.GetBalance(w.config.BuilderWalletAddress)
 
 			// Check if balance is enough to pay for the bid amount and the transaction fee.
-			paymentFee := new(big.Int).Mul(big.NewInt(PaymentTxGas), env.header.BaseFee)
-			totalPayoutCost := new(big.Int).Add(big.NewInt(int64(params.bidAmount)), paymentFee)
+			paymentFee := new(big.Int).Mul(big.NewInt(int64(w.config.BuilderPayoutPoolTxGas)), env.header.BaseFee)
+			totalPayoutCost := new(big.Int).Add(params.bidAmount, paymentFee)
 
 			log.Info("Checking builder wallet balance", "builderWalletBalance", builderWalletBalance, "totalPayoutCost", totalPayoutCost)
 			if builderWalletBalance.Cmp(totalPayoutCost) < 0 {
@@ -1453,7 +1452,7 @@ func (w *worker) commit(env *environment, interval func(), update bool, start ti
 // getSealingBlock generates the sealing block based on the given parameters.
 // The generation result will be passed back via the given channel no matter
 // the generation itself succeeds or not.
-func (w *worker) getSealingBlock(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, withdrawals types.Withdrawals, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64) (*types.Block, *big.Int, uint64, []byte, []bundleTypes.BuilderBundle, error) {
+func (w *worker) getSealingBlock(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, withdrawals types.Withdrawals, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, payoutPoolAddress common.Address, bidAmount *big.Int, gasLimit uint64) (*types.Block, *big.Int, *big.Int, []byte, []bundleTypes.BuilderBundle, error) {
 	req := &getWorkReq{
 		params: &generateParams{
 			timestamp:         timestamp,
@@ -1476,11 +1475,11 @@ func (w *worker) getSealingBlock(parent common.Hash, timestamp uint64, coinbase 
 	case w.getWorkCh <- req:
 		result := <-req.result
 		if result.err != nil {
-			return nil, nil, 0, nil, nil, result.err
+			return nil, nil, nil, nil, nil, result.err
 		}
 		return result.block, result.fees, req.params.bidAmount, result.payoutTx, result.triedBundles, nil
 	case <-w.exitCh:
-		return nil, nil, 0, nil, nil, errors.New("miner closed")
+		return nil, nil, nil, nil, nil, errors.New("miner closed")
 	}
 }
 
@@ -1534,16 +1533,24 @@ func signalToErr(signal int32) error {
 	}
 }
 
-func (w *worker) payoutPoolTransaction(env *environment, payoutPoolAddress *common.Address, bidAmount uint64) (*types.Transaction, error) {
+func (w *worker) payoutPoolTransaction(env *environment, payoutPoolAddress *common.Address, bidAmount *big.Int) (*types.Transaction, error) {
 
+	if payoutPoolAddress == nil {
+		return nil, fmt.Errorf("payout pool address is nil")
+	}
+
+	if bidAmount == nil {
+		return nil, fmt.Errorf("bid amount is nil")
+	}
+	
 	log.Info("block builder creating payout pool transaction", "payout pool address", payoutPoolAddress, "bid amount", bidAmount)
 
 	walletPk := w.config.BuilderWalletPrivateKey
 	chainId := w.chainConfig.ChainID
 	nonce := env.state.GetNonce(w.config.BuilderWalletAddress)
 	to := payoutPoolAddress
-	amount := new(big.Int).SetUint64(bidAmount)
-	gasLimit := uint64(PaymentTxGas)
+	amount := bidAmount
+	gasLimit := uint64(w.config.BuilderPayoutPoolTxGas)
 	gasPrice := new(big.Int).Add(env.header.BaseFee, big.NewInt(1))
 
 	tx := types.NewTransaction(nonce, *to, amount, gasLimit, gasPrice, nil)
@@ -1565,13 +1572,13 @@ func (w *worker) payoutPoolTransaction(env *environment, payoutPoolAddress *comm
 }
 
 // Accepts the block, time at which orders were taken, bundles which were used to build the block and all bundles that were considered for the block
-type SealedBlockCallbackFn = func(block *types.Block, fees *big.Int, bidAmount uint64, payoutPoolTx []byte, triedBundles []bundleTypes.BuilderBundle, err error)
+type SealedBlockCallbackFn = func(block *types.Block, fees *big.Int, bidAmount *big.Int, payoutPoolTx []byte, triedBundles []bundleTypes.BuilderBundle, err error)
 
 // BuildBlockWithCallback requests to generate a sealing block according to the
 // given parameters. Regardless of whether the generation is successful or not,
 // there is always a result that will be returned through the result channel.
 // The difference is that if the execution fails, the returned result is nil
 // and the concrete error is dropped silently.
-func (miner *Miner) BuildBlockWithCallback(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, withdrawals types.Withdrawals, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64, sealedBlockCallback SealedBlockCallbackFn) (chan *resPair, error) {
+func (miner *Miner) BuildBlockWithCallback(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, withdrawals types.Withdrawals, payoutPoolAddress common.Address, bidAmount *big.Int, gasLimit uint64, sealedBlockCallback SealedBlockCallbackFn) (chan *resPair, error) {
 	return miner.worker.BuildBlockWithCallback(parent, timestamp, coinbase, random, noTxs, transactions, bundles, withdrawals, payoutPoolAddress, bidAmount, gasLimit, sealedBlockCallback)
 }

@@ -56,12 +56,14 @@ type Config struct {
 	NewPayloadTimeout time.Duration // The maximum time allowance for creating a new payload
 	BuilderWalletPrivateKey *ecdsa.PrivateKey // The private key used to sign the builder transaction to PoN network Payout Pool
 	BuilderWalletAddress    common.Address    // The address of the builder wallet to make the builder transaction to PoN network Payout Pool
+	BuilderPayoutPoolTxGas uint64            // The gas used to make the builder transaction to PoN network Payout Pool
 }
 
 // DefaultConfig contains default settings for miner.
 var DefaultConfig = Config{
 	GasCeil:  30000000,
 	GasPrice: big.NewInt(params.GWei),
+	BuilderPayoutPoolTxGas: 300000,
 
 	// The default recommit time is chosen as two seconds since
 	// consensus-layer usually will wait a half slot of time(6s)
@@ -254,4 +256,14 @@ func (miner *Miner) SubscribePendingLogs(ch chan<- []*types.Log) event.Subscript
 // BuildPayload builds the payload according to the provided parameters.
 func (miner *Miner) BuildPayload(args *BuildPayloadArgs) (*Payload, error) {
 	return miner.worker.regularWorker.buildPayload(args)
+}
+
+// Get Payout Pool Tx Gas
+func (miner *Miner) GetPayoutPoolTxGas() uint64 {
+	return miner.worker.regularWorker.config.BuilderPayoutPoolTxGas
+}
+
+// Get Block Gas ceil
+func (miner *Miner) GetBlockGasCeil() uint64 {
+	return miner.worker.regularWorker.config.GasCeil
 }

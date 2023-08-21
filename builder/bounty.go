@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 
 	_ "os"
 	"strconv"
@@ -15,7 +16,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/miner"
 
 	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
 	commonTypes "github.com/bsn-eng/pon-golang-types/common"
@@ -31,13 +31,17 @@ func (b *Builder) ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttr
 		return res, fmt.Errorf("nil attributes")
 	}
 
+	if attrs.BidAmount == nil || attrs.BidAmount.Sign() <= 0 {
+		return res, fmt.Errorf("invalid bid amount. Must provide a positive bid amount")
+	}
+
 	if attrs.Slot == 0 {
 		return res, fmt.Errorf("slot must be specified for bounty bid")
 	}
 
 	b.slotSubmissionsLock.Lock()
 	bountySubmitted, ok := b.slotBountyAmount[attrs.Slot]
-	if ok && (bountySubmitted>0) {
+	if ok && bountySubmitted != nil && (bountySubmitted.Sign() > 0) {
 		b.slotSubmissionsLock.Unlock()
 		return res, fmt.Errorf("bounty bid already submitted for slot %d", attrs.Slot)
 	}
@@ -45,13 +49,12 @@ func (b *Builder) ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttr
 	// check if bid amount is 2 times greater at least than the previous bid
 	if len(b.slotBidAmounts[attrs.Slot]) > 0 {
 		lastBidAmount := b.slotBidAmounts[attrs.Slot][len(b.slotBidAmounts[attrs.Slot])-1]
-		if attrs.BidAmount < lastBidAmount*2 {
+		if attrs.BidAmount.Cmp(new(big.Int).Mul(lastBidAmount, big.NewInt(2))) < 1 {
 			b.slotSubmissionsLock.Unlock()
 			log.Info("bounty bid amount is not 2 times greater than the previous bid known", "slot", attrs.Slot, "bid amount", attrs.BidAmount, "last bid amount", lastBidAmount)
 			return res, fmt.Errorf("bounty bid amount is not 2 times greater than the previous bid known, slot %d, bid amount %d, last bid amount %d", attrs.Slot, attrs.BidAmount, lastBidAmount)
 		}
 	}
-
 	b.slotSubmissionsLock.Unlock()
 
 	b.beacon.BeaconData.Mu.Lock()
@@ -70,7 +73,7 @@ func (b *Builder) ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttr
 	currentBlock := b.eth.GetBlockChain().CurrentBlock()
 	b.beacon.BeaconData.Mu.Unlock()
 
-	currentSlotStartTime := b.genesisInfo.GenesisTime + (currentSlot-1)*bbTypes.SLOT_DURATION
+	currentSlotStartTime := b.genesisInfo.GenesisTime + (currentSlot)*bbTypes.SLOT_DURATION
 	slotBountyTimeCutOff := currentSlotStartTime + 3 // 3s into the current slot for the bounty bid
 
 	// If attrs.Slot is not the next slot, return
@@ -90,10 +93,21 @@ func (b *Builder) ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttr
 			log.Error("slot past and not available to bounty bid on", "slot", attrs.Slot, "current slot", currentSlot, "next available slot for bid", currentSlot+1)
 			return res, errors.New("slot " + strconv.Itoa(int(attrs.Slot)) + " is past and not available to bid on, current slot is " + strconv.Itoa(int(currentSlot)) + " and next available slot for bid is " + strconv.Itoa(int(currentSlot+1)))
 		}
-	} else {
+	} else if attrs.Slot == currentSlot+1 {
 		// Bidding on next slot, thus the bounty slot time cut off is 3s into the next slot
 		slotBountyTimeCutOff = slotBountyTimeCutOff + bbTypes.SLOT_DURATION
 	}
+
+	log.Info("Processing bounty bid",
+		"slot", attrs.Slot,
+		"bid amount", attrs.BidAmount,
+		"current slot", currentSlot,
+		"current block number", currentBlock.Number,
+		"current block time", currentBlock.Time,
+		"current slot start time", currentSlotStartTime,
+		"slot bounty time cut off", slotBountyTimeCutOff,
+		"current time", time.Now().Unix(),
+	)
 
 	knownAttrs := make([]builderTypes.BuilderPayloadAttributes, 0)
 
@@ -153,32 +167,21 @@ func (b *Builder) ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttr
 			log.Info("Using provided head block", "head block hash", attrs.HeadHash)
 		}
 
-		// If the attrs.Random is null address, use current block random
-		if attrs.Random == (common.Hash{}) {
-			prevRandao, err := b.beacon.Randao(attrs.Slot - 1)
-			if err != nil {
-				log.Error("could not get previous randao", "err", err)
-				return res, fmt.Errorf("could not get previous randao: %w", err)
-			}
-			attrs.Random = *prevRandao
+		prevRandao, err := b.beacon.Randao(attrs.Slot - 1)
+		if err != nil {
+			log.Error("could not get previous randao", "err", err)
+			return res, fmt.Errorf("could not get previous randao: %w", err)
+		}
+		attrs.Random = *prevRandao
+
+		attrs.Timestamp = hexutil.Uint64(b.genesisInfo.GenesisTime + (attrs.Slot)*bbTypes.SLOT_DURATION)
+
+		if attrs.PayoutPoolAddress == (common.Address{}) {
+			// If payout pool address is not provided, use the relay payout address
+			attrs.PayoutPoolAddress = b.relay.GetPayoutAddress()
 		}
 
-		if attrs.Timestamp == 0 {
-			attrs.Timestamp = hexutil.Uint64(b.genesisInfo.GenesisTime + (attrs.Slot)*bbTypes.SLOT_DURATION)
-			log.Debug("timestamp not provided, creating timestamp", "timestamp", b.genesisInfo.GenesisTime+(attrs.Slot)*bbTypes.SLOT_DURATION, "slot", attrs.Slot)
-		} else if attrs.Timestamp != hexutil.Uint64(b.genesisInfo.GenesisTime+attrs.Slot*bbTypes.SLOT_DURATION) {
-			log.Error("timestamp not correct", "timestamp", attrs.Timestamp, "slot", attrs.Slot)
-			return res, fmt.Errorf("Incorrect timestamp for slot. Expected %d, got %d", b.genesisInfo.GenesisTime+attrs.Slot*bbTypes.SLOT_DURATION, attrs.Timestamp)
-		}
-
-		// Attributes timestamp is checked and set, so time until bids can be calculated
-		// correctly as the timestamp is the valid true time of the end of the slot
-
-		attrs.PayoutPoolAddress = b.relay.GetPayoutAddress()
-
-		if attrs.GasLimit <= 0 {
-			attrs.GasLimit = miner.DefaultConfig.GasCeil
-		}
+		attrs.GasLimit = b.eth.GetBlockGasCeil()
 
 	} else {
 		b.slotMu.Lock()
@@ -190,27 +193,21 @@ func (b *Builder) ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttr
 		// to the list of known attributes
 		latestAttrs := knownAttrs[len(slotAttrs)-1]
 		attrs.Withdrawals = latestAttrs.Withdrawals
-		attrs.PayoutPoolAddress = latestAttrs.PayoutPoolAddress
+		attrs.GasLimit = latestAttrs.GasLimit
+		attrs.Timestamp = latestAttrs.Timestamp
+		attrs.HeadHash = latestAttrs.HeadHash
+		attrs.Random = latestAttrs.Random
 
-		if attrs.GasLimit == 0 {
-			attrs.GasLimit = latestAttrs.GasLimit
-		}
-		if attrs.Timestamp == 0 {
-			attrs.Timestamp = latestAttrs.Timestamp
-		} else if attrs.Timestamp != hexutil.Uint64(b.genesisInfo.GenesisTime+attrs.Slot*bbTypes.SLOT_DURATION) {
-			log.Error("timestamp not correct", "timestamp", attrs.Timestamp, "slot", attrs.Slot)
-			return res, fmt.Errorf("Incorrect timestamp for slot. Expected %d, got %d", b.genesisInfo.GenesisTime+attrs.Slot*bbTypes.SLOT_DURATION, attrs.Timestamp)
-		}
-		if attrs.HeadHash == (common.Hash{}) {
-			attrs.HeadHash = latestAttrs.HeadHash
-		}
-		if attrs.Random == (common.Hash{}) {
-			attrs.Random = latestAttrs.Random
+		if attrs.PayoutPoolAddress == (common.Address{}) {
+			// If payout pool address is not provided, use the relay payout address
+			attrs.PayoutPoolAddress = b.relay.GetPayoutAddress()
+		} else {
+			log.Info("Using provided payout pool address", "payout pool address", attrs.PayoutPoolAddress)
 		}
 		if attrs.SuggestedFeeRecipient == (common.Address{}) {
 			attrs.SuggestedFeeRecipient = latestAttrs.SuggestedFeeRecipient
 		}
-		if attrs.Transactions == nil {
+		if len(attrs.Transactions) == 0 {
 			attrs.Transactions = latestAttrs.Transactions
 		}
 		b.slotMu.Unlock()
@@ -245,12 +242,11 @@ func (b *Builder) ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttr
 
 	timeForBounty := time.Until(time.Unix(int64(slotBountyTimeCutOff), 0))
 	ctx, ctxCancel := context.WithTimeout(context.Background(), timeForBounty)
-
 	defer ctxCancel()
 
 	// If first time submitting for this slot, start the slot builder and submitter
 	var (
-		bountyComplete chan struct{ bidAmount uint64 }
+		bountyComplete chan struct{ bidAmount *big.Int }
 		submissionErr  error
 		buildingErr    error
 	)
@@ -260,9 +256,10 @@ func (b *Builder) ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttr
 		// If not ok then means all 3 channels are not initialised
 		// as we initialise them all at the same time
 
+		log.Info("Initialising slot channels", "slot", attrs.Slot)
 		channel := make(chan blockProperties)
-		bidComplete := make(chan struct{ bidAmount uint64 })
-		bountyComplete = make(chan struct{ bidAmount uint64 })
+		bidComplete := make(chan struct{ bidAmount *big.Int }, 2)
+		bountyComplete = make(chan struct{ bidAmount *big.Int })
 		b.slotSubmissionsChan[attrs.Slot] = channel
 		b.slotBidCompleteChan[attrs.Slot] = bidComplete
 		b.slotBountyCompleteChan[attrs.Slot] = bountyComplete
@@ -284,11 +281,10 @@ processing:
 			log.Info("Slot context done/cancelled for bounty bid. Ending slot bounty processing", "slot", attrs.Slot)
 			break processing
 		case submission := <-bountyComplete:
-			if submission.bidAmount == 0 {
+			if (submission.bidAmount == nil) || (submission.bidAmount != nil && submission.bidAmount.Sign() < 1) {
 				log.Info("Submitted empty bid.", "slot", attrs.Slot)
 				break processing
-			}
-			if submission.bidAmount == attrs.BidAmount {
+			} else {
 				successfulSubmission = true
 				log.Info("Slot submission complete for given bounty attributes", "slot", attrs.Slot, "bidAmount", attrs.BidAmount)
 				break processing
@@ -297,6 +293,11 @@ processing:
 			// Else the submission was not for these attributes and rather for another set of attributes
 
 		default:
+			
+			if ctx.Err() != nil {
+				log.Info("Slot context done/cancelled for bounty bid. Ending slot bounty processing", "slot", attrs.Slot)
+				break processing
+			}
 
 		}
 	}
@@ -314,7 +315,7 @@ processing:
 		return res, fmt.Errorf("error during bounty block building. slot: %d, err: %s", attrs.Slot, buildingErr)
 	}
 
-	if (b.slotBountyAmount[attrs.Slot]==0) {
+	if b.slotBountyAmount[attrs.Slot] == nil || b.slotBountyAmount[attrs.Slot].Sign() < 1 {
 		return res, fmt.Errorf("could not submit any bounty block bid for slot %d", attrs.Slot)
 	}
 

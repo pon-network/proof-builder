@@ -92,13 +92,13 @@ func (w *multiWorker) disablePreseal() {
 type resPair struct {
 	res          *types.Block
 	fees         *big.Int
-	bidAmount   uint64
+	bidAmount    *big.Int
 	payoutTx     []byte
 	triedBundles []bundleTypes.BuilderBundle
 	err          error
 }
 
-func (w *multiWorker) BuildBlockWithCallback(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, withdrawals types.Withdrawals, payoutPoolAddress common.Address, bidAmount uint64, gasLimit uint64, sealedBlockCallback SealedBlockCallbackFn) (chan *resPair, error) {
+func (w *multiWorker) BuildBlockWithCallback(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool, transactions [][]byte, bundles []bundleTypes.BuilderBundle, withdrawals types.Withdrawals, payoutPoolAddress common.Address, bidAmount *big.Int, gasLimit uint64, sealedBlockCallback SealedBlockCallbackFn) (chan *resPair, error) {
 	allResPairs := []resPair{}
 
 	for _, worker := range w.workers {

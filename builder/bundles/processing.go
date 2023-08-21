@@ -2,6 +2,7 @@ package bundles
 
 import (
 	"fmt"
+	"math/big"
 	"time"
 
 	"sort"
@@ -12,7 +13,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/miner"
 
 	bundleTypes "github.com/bsn-eng/pon-golang-types/bundles"
 
@@ -44,9 +44,9 @@ func (s *BundleService) AddBundle(
 		return nil, fmt.Errorf("must set max timestamp if min timestamp is set")
 	} else if blockNumber == 0 && minTimestamp > maxTimestamp {
 		return nil, fmt.Errorf("min timestamp must be less than max timestamp")
-	} else if blockNumber == 0 && maxTimestamp - minTimestamp > uint64(s.MaxLifetime) {
+	} else if blockNumber == 0 && maxTimestamp-minTimestamp > uint64(s.MaxLifetime) {
 		return nil, fmt.Errorf("time range cannot be greater than %d seconds", s.MaxLifetime)
-	} else if blockNumber == 0 && minTimestamp > uint64(time.Now().Unix()) && minTimestamp - uint64(time.Now().Unix()) > uint64(s.MaxFuture) {
+	} else if blockNumber == 0 && minTimestamp > uint64(time.Now().Unix()) && minTimestamp-uint64(time.Now().Unix()) > uint64(s.MaxFuture) {
 		return nil, fmt.Errorf("min timestamp cannot be greater than %d seconds in the future", s.MaxFuture)
 	}
 
@@ -60,13 +60,13 @@ func (s *BundleService) AddBundle(
 	// If the specific block number has been set with no time range, then check the total gas for all bundles in that block
 	// If the total gas is greater than the max block gas, then return an error that the bundle cannot be added as it will exceed the max block gas
 
-	totalBlockBundlesGas := uint64(0)
+	totalBlockBundlesGas := big.NewInt(0)
 	totalBlockBundlesGas, err = s.GetTotalPendingBundleGasForBlockNumber(bundle.BlockNumber)
 	if err != nil {
 		log.Debug("Error getting total bundle gas for block number", "err", err)
 	}
 
-	if totalBlockBundlesGas+bundle.BundleTotalGas > (miner.DefaultConfig.GasCeil + miner.PaymentTxGas) && bundle.BlockNumber != 0 && bundle.MinTimestamp == 0 && bundle.MaxTimestamp == 0 {
+	if totalBlockBundlesGas.Add(totalBlockBundlesGas, big.NewInt(int64(bundle.BundleTotalGas))).Cmp(big.NewInt(int64(s.eth.Miner().GetBlockGasCeil()-s.eth.Miner().GetPayoutPoolTxGas()))) == 1 && bundle.BlockNumber != 0 && bundle.MinTimestamp == 0 && bundle.MaxTimestamp == 0 {
 		return nil, fmt.Errorf("bundle cannot be added as it will exceed the max block gas")
 	}
 
@@ -79,7 +79,7 @@ func (s *BundleService) AddBundle(
 	nextTimestamp := s.NextBundleTimeStamp
 	s.Mu.Unlock()
 
-	if (blockNumber < nextBlockNumber && blockNumber != 0) {
+	if blockNumber < nextBlockNumber && blockNumber != 0 {
 
 		s.Mu.Lock()
 		s.NextBundlesMap[bundle.ID] = bundle
@@ -200,9 +200,9 @@ func (s *BundleService) ChangeBundle(
 		return nil, fmt.Errorf("must set max timestamp if min timestamp is set")
 	} else if blockNumber == 0 && minTimestamp > maxTimestamp {
 		return nil, fmt.Errorf("min timestamp must be less than max timestamp")
-	} else if blockNumber == 0 && maxTimestamp - minTimestamp > uint64(s.MaxLifetime) {
+	} else if blockNumber == 0 && maxTimestamp-minTimestamp > uint64(s.MaxLifetime) {
 		return nil, fmt.Errorf("time range cannot be greater than %d seconds", s.MaxLifetime)
-	} else if blockNumber == 0 && minTimestamp > uint64(time.Now().Unix()) && minTimestamp - uint64(time.Now().Unix()) > uint64(s.MaxFuture) {
+	} else if blockNumber == 0 && minTimestamp > uint64(time.Now().Unix()) && minTimestamp-uint64(time.Now().Unix()) > uint64(s.MaxFuture) {
 		return nil, fmt.Errorf("min timestamp cannot be greater than %d seconds in the future", s.MaxFuture)
 	}
 
@@ -221,13 +221,13 @@ func (s *BundleService) ChangeBundle(
 	// If the specific block number has been set with no time range, then check the total gas for all bundles in that block
 	// If the total gas is greater than the max block gas, then return an error that the bundle cannot be added as it will exceed the max block gas
 
-	totalBlockBundlesGas := uint64(0)
+	totalBlockBundlesGas := big.NewInt(0)
 	totalBlockBundlesGas, err = s.GetTotalPendingBundleGasForBlockNumber(bundle.BlockNumber)
 	if err != nil {
 		log.Debug("Error getting total bundle gas for block number", "err", err)
 	}
 
-	if totalBlockBundlesGas+bundle.BundleTotalGas > (miner.DefaultConfig.GasCeil + miner.PaymentTxGas) && bundle.BlockNumber != 0 && bundle.MinTimestamp == 0 && bundle.MaxTimestamp == 0 {
+	if totalBlockBundlesGas.Add(totalBlockBundlesGas, big.NewInt(int64(bundle.BundleTotalGas))).Cmp(big.NewInt(int64(s.eth.Miner().GetBlockGasCeil()-s.eth.Miner().GetPayoutPoolTxGas()))) == 1 && bundle.BlockNumber != 0 && bundle.MinTimestamp == 0 && bundle.MaxTimestamp == 0 {
 		return nil, fmt.Errorf("bundle cannot be added as it will exceed the max block gas")
 	}
 
@@ -240,7 +240,7 @@ func (s *BundleService) ChangeBundle(
 	nextTimestamp := s.NextBundleTimeStamp
 	s.Mu.Unlock()
 
-	if (blockNumber < nextBlockNumber && blockNumber != 0) {
+	if blockNumber < nextBlockNumber && blockNumber != 0 {
 
 		s.Mu.Lock()
 		s.NextBundlesMap[bundle.ID] = bundle
@@ -343,22 +343,58 @@ func (s *BundleService) GetReadyBundles(blockNumber uint64, currentTime time.Tim
 	for _, bundle := range s.NextBundlesMap {
 		// Get bundles that are the current block number or that have a timerange that includes the current time
 		if bundle.BlockNumber == blockNumber || ((bundle.MinTimestamp < uint64(currentTime.Unix())) && (bundle.MaxTimestamp > uint64(currentTime.Unix()))) {
-			if !bundle.Adding && !bundle.Added {
+			if !bundle.Adding && !bundle.Added && !bundle.Included {
 				bundles = append(bundles, *bundle)
 			}
 		}
 	}
 
-	// Sort the bundles by block number first, then by soonest min timestamp first
+	/*** Start of Bundle Sorting ***/
+
+	// Sort the bundles by block number first, then by added first
 	sort.Slice(bundles, func(i, j int) bool {
-		if bundles[i].BlockNumber == bundles[j].BlockNumber {
+		if bundles[i].BlockNumber == 0 || bundles[i].BlockNumber == bundles[j].BlockNumber {
+			// If the block numbers are the same or it is a time range bundle, then sort by max payout (bundle total gas) first
+
 			if bundles[i].BundleTotalGas == bundles[j].BundleTotalGas {
+				// If the total gas is the same, sort by the max timestamp first to
+				// ensure that the bundle with the earliest max timestamp is processed first
+
+				if bundles[i].BundleDateTime.Unix() == bundles[j].BundleDateTime.Unix() {
+					// If the timestamps are the same, sort by total gas for the most gas first
+
+					if bundles[i].MaxTimestamp == bundles[j].MaxTimestamp {
+						// If the max timestamps are the same, sort by the least number
+						// of reverting txs first as bundle is being presented as having the least
+						// points of failure
+
+						if len(bundles[i].RevertingTxHashes) == len(bundles[j].RevertingTxHashes) {
+							// If the reverting txs are the same, sort by the number of transactions
+							// in the bundle with the least number of transactions first as it will
+							// computationally be the cheapest to process
+
+							return bundles[i].BundleTransactionCount < bundles[j].BundleTransactionCount
+
+							// If not, the sort algorithm maintains the order of the comparing elements
+						}
+						return len(bundles[i].RevertingTxHashes) < len(bundles[j].RevertingTxHashes)
+
+					}
+
+					return bundles[i].MaxTimestamp < bundles[j].MaxTimestamp
+				}
+
 				return bundles[i].BundleDateTime.Unix() < bundles[j].BundleDateTime.Unix()
+
 			}
+
 			return bundles[i].BundleTotalGas > bundles[j].BundleTotalGas
+
 		}
-		return bundles[i].BlockNumber < bundles[j].BlockNumber
+
+		return (bundles[i].BlockNumber < bundles[j].BlockNumber && bundles[i].BlockNumber != 0)
 	})
+	/*** End of Bundle Sorting ***/
 
 	return bundles, nil
 

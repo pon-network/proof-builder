@@ -59,3 +59,11 @@ func (s *EthService) GetBlockChain() *core.BlockChain {
 func (s* EthService) Backend() *eth.Ethereum {
 	return s.eth
 }
+
+func (s *EthService) GetPayoutPoolTxGas() uint64 {
+	return s.eth.Miner().GetPayoutPoolTxGas()
+}
+
+func (s *EthService) GetBlockGasCeil() uint64 {
+	return s.eth.Miner().GetBlockGasCeil()
+}

@@ -3,6 +3,7 @@ package multibeaconClient
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"time"
 
@@ -28,6 +29,7 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.Sign
 	}
 
 	var responseCount int
+	var successfulCount int
 
 	for {
 		select {
@@ -38,28 +40,74 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.Sign
 			responseCount++
 			switch e {
 			case nil:
-				// Successful submission, so error is nil
-				return nil
+				// Successful submission, so increment the successful count
+				successfulCount++
+				if responseCount == len(b.Clients) {
+					// All clients have responded, so return the error (if any)
+					// There has been at least one successful submission,
+					// since succesfulCount has definitely been incremented in this case
+					log.Info("Successfully submitted block to beacon chain", "successes", successfulCount, "failures", len(b.Clients)-successfulCount)
+					err = nil
+
+					if metricsEnabled {
+						// There was at least one successful submission, don't record an error
+						submissionErr := sql.NullString{
+							String: "",
+							Valid:  false,
+						}
+
+						signedBeaconBlock := database.SignedBeaconBlockSubmissionEntry{
+							InsertedAt:        time.Now(),
+							Signature:         block.Signature.String(),
+							SignedBeaconBlock: block.Message.String(),
+							SubmittedToChain:  true,
+							SubmissionError:   submissionErr,
+						}
+						go db.InsertBeaconBlock(signedBeaconBlock, block.Message.Body.ExecutionPayload.BlockHash.String())
+					}
+
+					return err
+				}
+
 			default:
 				// Error received, so set the error and continue
 				err = e
 				if responseCount == len(b.Clients) {
 					// All clients have responded, so return the error (if any)
+
+					if successfulCount == 0 {
+						if err == nil {
+							err = errors.New("failed to submit block to any clients")
+						}
+					} else {
+						log.Info("Successfully submitted block to beacon chain", "successes", successfulCount, "failures", len(b.Clients)-successfulCount)
+						err = nil
+					}
+
 					if metricsEnabled {
+						var submissionErr sql.NullString
+						if err == nil && successfulCount > 0 {
+							// If there was at least one successful submission, then don't record the error
+							submissionErr = sql.NullString{
+								String: "",
+								Valid:  false,
+							}
+						} else {
+							submissionErr = sql.NullString{
+								String: err.Error(),
+								Valid:  err != nil,
+							}
+						}
+
 						signedBeaconBlock := database.SignedBeaconBlockSubmissionEntry{
 							InsertedAt:        time.Now(),
 							Signature:         block.Signature.String(),
 							SignedBeaconBlock: block.Message.String(),
-							SubmittedToChain:  err == nil,
-							SubmissionError: sql.NullString{
-								String: err.Error(),
-								Valid:  err != nil,
-							},
+							SubmittedToChain:  successfulCount > 0,
+							SubmissionError:   submissionErr,
 						}
 						go db.InsertBeaconBlock(signedBeaconBlock, block.Message.Body.ExecutionPayload.BlockHash.String())
 					}
-
-					log.Info("Failed to submit block to all clients", "err", err)
 
 					return err
 				}

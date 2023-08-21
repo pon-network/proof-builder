@@ -1,6 +1,8 @@
+import sys
 import requests
 import json
 import time
+import random
 import paho.mqtt.client as mqtt
 from collections import defaultdict
 from multiprocessing import Process
@@ -22,23 +24,35 @@ class BlockBidder:
     def __init__(
         self,
         bid_url,
+        bounty_bid_url,
         beacon_url,
         default_bid,
         fee_recipient,
         auto_slot=True,
-        mqtt_broker=""
+        mqtt_broker="",
+        mqtt_id="",
+        mqtt_username="",
+        mqtt_password="",
+        verbose=False,
     ):
         self.bid_url = bid_url
+        self.bounty_bid_url = bounty_bid_url
         self.beacon_url = beacon_url
         self.slot_count = 0
         self.slot_bid_amount = defaultdict(lambda: default_bid)
+        self.slot_bounty_amount = defaultdict(int)
         self.fee_recipient = fee_recipient
         self.transactions = []
         self.no_mempool_txs = "false"
         self.auto_slot = auto_slot
         self.enable_bulletin_board = mqtt_broker != ""
         self.mqtt_broker = mqtt_broker
+        self.mqtt_id = mqtt_id
+        self.mqtt_username = mqtt_username
+        self.mqtt_password = mqtt_password
         self.client = None
+        self.bidding_process = None
+        self.verbose = verbose
 
         self.wl_bid_addresses = []
         # Whitelisted bid addresses that are allowed
@@ -75,11 +89,16 @@ class BlockBidder:
         """
         The function connects to the bulletin board.
         """
+        print("Connecting to bulletin board...")
         if self.mqtt_broker is None:
             raise Exception("No MQTT broker specified")
-        self.client = mqtt.Client()
-        self.client.connect(self.mqtt_broker)
-        self.client.loop_start()
+        self.client = mqtt.Client(self.mqtt_id)
+        self.client.username_pw_set(
+            self.mqtt_username, self.mqtt_password
+        )
+        self.client.on_connect = self.on_connect
+        print("Waiting for bulletin board connection...")
+        self.client.connect(self.mqtt_broker, 1883)
 
     def subscribe(self):
         """
@@ -114,46 +133,74 @@ class BlockBidder:
         (message content)
         :return: The function does not explicitly return anything.
         """
-        # print("\n****************************\n")
-        # print("Bulletin Board new message:")
-        # print("Topic:", message.topic)
-        # print("Message:", str(message.payload.decode("utf-8")))
-        # print("\n****************************\n")
 
         if message.topic == "topic/HighestBid":
-            # message is a comma separated string of the form:
-            # slot, address, bid_amount
-            # e.g. slot: 0, address: 0x123, bid_amount: 1000000000000000000
-            data = message.payload.decode("utf-8").split(
-                ","
-            )
-            slot, address, bid_amount = data[0], data[1], data[2]
-            slot = slot.split(":")[1].strip()
-            address = address.split(":")[1].strip()
-            bid_amount = bid_amount.split(":")[1].strip()
-
-            if int(slot) > int(self.slot_count):
-                self.slot_count = int(slot)
-
             print("\n****************************\n")
-            print("Slot bid for: " + str(slot))
-            print("Highest bid address: " + address)
-            print("Current bid amount: " + str(bid_amount))
+            try:
+                # message is a comma separated string of the form:
+                # slot, address, bid_amount
+                # e.g. slot: 0, address: 0x123, bid_amount: 1000000000000000000
+                data = message.payload.decode("utf-8").split(
+                    ","
+                )
+                slot, address, bid_amount = data[0], data[1], data[2]
+                slot = slot.split(":")[1].strip()
+                address = address.split(":")[1].strip()
+                bid_amount = bid_amount.split(":")[1].strip()
 
-            if str(address).strip().lower() in self.wl_bid_addresses:
-                print("\nDo not attempt to outbid")
-                print("Whitelisted address:", address)
+                if int(slot) > int(self.slot_count):
+                    self.slot_count = int(slot)
+                else:
+                    return
+
+                print("Slot bid for: " + str(slot))
+                print("Highest bid address: " + address)
+                print("Current bid amount: " + str(bid_amount))
+
+                if str(address).strip().lower() in self.wl_bid_addresses:
+                    print("\nDo not attempt to outbid")
+                    print("Whitelisted address:", address)
+                    print("\n****************************\n")
+                    return
+
+                # pick a random integer between 1 and 5
+                bid_increase_val = random.randint(1, 5)
+                bid_increase_val = str(bid_increase_val) + "0000000000000"
+
+                print("Attempting to outbid...")
+                print("Sending bid amount:",
+                      str(int(bid_amount)+int(bid_increase_val)))
+
+                self.place_bid(int(slot), int(
+                    bid_amount)+int(bid_increase_val))
+
+                # use math random to randomize whether to bounty bid or not
+                if random.random() < 0.8:
+                    if self.slot_bounty_amount[slot] == 0:
+                        # If no bounty bid yet, bounty bid
+                        # Increase bid by 110% ( to meet the minimum 2x value requirement)
+                        bounty_amount = (int(bid_amount) +
+                                         int(bid_increase_val)) * 2.1
+                        print("\nBounty bidding...")
+                        print("Sending bounty bid amount:",
+                              bounty_amount)
+                        self.place_bid(int(slot), int(bounty_amount), True)
+                        self.slot_bounty_amount[slot] = bounty_amount
+
                 print("\n****************************\n")
-                return
 
-            print("Attempting to outbid...")
-            print("Sending bid amount:",
-                  str(int(bid_amount)+1))
+            except Exception as e:
+                print("Error:", e)
+                print("\n****************************\n")
+
+        else:
+            print("\n****************************\n")
+            print("Bulletin Board new message:")
+            print("Topic:", message.topic)
+            print("Message:", str(message.payload.decode("utf-8")))
             print("\n****************************\n")
 
-            # self.place_bid(int(slot), int(bid_amount)+1)
-
-    def place_bid(self, slot=None, bid_amount=None):
+    def place_bid(self, slot=None, bid_amount=None, bounty=False):
         """
         The function is used to submit a bid for a specific slot.
         """
@@ -163,6 +210,12 @@ class BlockBidder:
             "transactions": self.transactions,
             "noMempoolTxs": self.no_mempool_txs
         }
+
+        # If bounty bid the slot is needed
+        if bounty:
+            if slot is None:
+                raise Exception("Bounty bid requires slot")
+            payload["slot"] = str(slot)
 
         if slot is None:
             slot = self.slot_count
@@ -185,7 +238,7 @@ class BlockBidder:
 
         response = requests.request(
             "POST",
-            self.bid_url,
+            (self.bid_url if not bounty else self.bounty_bid_url),
             headers=headers,
             data=json.dumps(payload)
         )
@@ -218,36 +271,37 @@ class BlockBidder:
                     try:
                         slot_count = int(
                             current_user_bid["block_bid"]["message"]["slot"])
-                        print(
-                            "Successfully submitted bid for slot:",
-                            str(slot_count)
-                        )
+
+                        success_msg = f"Successfully submitted {('bounty ' if bounty else '')}bid for slot: {slot_count}"
+                        print(success_msg)
 
                         print("")
-
-                        print("Finalized bid: ")
-                        print(current_user_bid["block_bid"])
-                        print("")
-                        print("Relay response: ")
-                        print(current_user_bid["relay_response"])
-                        print("")
-                        print("Bid requested at: ")
-                        print(current_user_bid["bid_request_time"])
-                        print("")
-                        print("Block built at: ")
-                        print(current_user_bid["block_built_time"])
-                        print("")
-                        print("Block submitted at: ")
-                        print(current_user_bid["block_submitted_time"])
-                        print("")
-                        print("Bids sent to relay: ")
+                        print("Bids sent to relay for slot: ")
                         print(len(json_response))
                         print("")
-                        print("All submitted bids: ")
-                        print(json_response)
+
+                        if self.verbose:
+                            print("Finalized bid: ")
+                            print(current_user_bid["block_bid"])
+                            print("")
+                            print("Relay response: ")
+                            print(current_user_bid["relay_response"])
+                            print("")
+                            print("Bid requested at: ")
+                            print(current_user_bid["bid_request_time"])
+                            print("")
+                            print("Block built at: ")
+                            print(current_user_bid["block_built_time"])
+                            print("")
+                            print("Block submitted at: ")
+                            print(current_user_bid["block_submitted_time"])
+                            print("")
+                            print("All submitted bids: ")
+                            print(json_response)
 
                     except KeyError:
-                        print("Successfully submitted bid for current slot")
+                        print(
+                            f"Successfully submitted {('bounty ' if bounty else '')}bid for current slot")
 
                         print("")
 
@@ -264,7 +318,8 @@ class BlockBidder:
             ("duplicate" not in response.text) and
             ("slot for bid" not in response.text)
         ):
-            print("Error submitting bid for slot:", slot)
+            print(
+                f"Error submitting {('bounty ' if bounty else '')}bid for slot: {slot}")
             print("Error:", response.text)
 
         if correct_slot:
@@ -277,30 +332,55 @@ class BlockBidder:
         """
         The function is used to submit bids for all slots.
         """
-        messages = SSEClient(self.beacon_url + "/eth/v1/events?topics=head")
+        messages = SSEClient(
+            self.beacon_url + "/eth/v1/events?topics=payload_attributes")
 
         for event in messages:
             try:
-                print("Head event received")
-                print(event.data)
 
-                slot = int(json.loads(event.data)["slot"])
+                if self.verbose:
+                    print("Payload attributes event received")
+                    print(event.data)
+
+                # Dictionaries in python maintain insertion order
+                # so we can iterate through the dictionary of bid amounts and bounty amounts
+                # to clean up old bids
+                no_entires = len(list(self.slot_bid_amount))
+                if no_entires > 2:
+                    last_slot = list(self.slot_bid_amount)[no_entires - 1]
+                    for slot in list(self.slot_bid_amount):
+                        if int(slot) < int(last_slot)-1:  # Clear bids older than 2 slots
+                            del self.slot_bid_amount[slot]
+                            del self.slot_bounty_amount[slot]
+
                 self.place_bid()
             except Exception as submission_error:
                 print("Error submitting bid for slot from head event")
                 print(submission_error)
+
+    def on_connect(self, client, userdata, flags, rc):
+        if rc == 0:
+            print("Connected to bulletin board\n")
+            self.subscribe()
+        else:
+            print("Failed to connect to bulletin board\n")
+            if self.bidding_process is not None:
+                self.bidding_process.terminate()
+            sys.exit("Failed to connect to bulletin board")
 
     def start(self):
         """
         The function is used to start the block bidder.
         """
         print("Starting block bidder\n")
-        if self.enable_bulletin_board:
-            self.connect_bulletin_board()
-            self.subscribe()
-
         # use multi-processing to submit bids for all slots
         p = Process(target=self.submit_bids)
+        self.bidding_process = p
+
+        if self.enable_bulletin_board:
+            self.connect_bulletin_board()
+            self.client.loop_start()
+
         p.start()
 
 
@@ -308,11 +388,16 @@ if __name__ == "__main__":
 
     BLOCK_BUILDER_ADDRESS = "0x22A3864baaE65a9e8E5C163F80F850ADFe40Ed90"
     BEACON_NODE_URL = "http://localhost:3001"
-    BUILDER_BID_URL = "http://localhost:10000/eth/v1/builder/submit_block_bid"
-    BROKER = "broker.emqx.io"
+    BUILDER_BID_URL = "http://localhost:10001/eth/v1/builder/submit_block_bid"
+    BUILDER_BOUNTY_URL = "http://localhost:10001/eth/v1/builder/submit_block_bounty_bid"
+    BROKER = "d9971339.emqx.cloud"
+    MQTT_ID = "builder-1"
+    MQTT_USERNAME = "builders"
+    MQTT_PASSWORD = "bids"
+    VERBOSE = False
 
-    # Bid amount is in wei, so 0.04 ETH = 40000000000000000 wei
-    DEFAULT_BID = 40000000000000000  # 0.04 ETH
+    # Bid amount is in wei
+    DEFAULT_BID = 41000000000000000  # 0.041 ETH
 
     FEE_RECIPIENT = "0x22A3864baaE65a9e8E5C163F80F850ADFe40Ed90"
 
@@ -326,11 +411,16 @@ if __name__ == "__main__":
 
     bidder = BlockBidder(
         BUILDER_BID_URL,
+        BUILDER_BOUNTY_URL,
         BEACON_NODE_URL,
         DEFAULT_BID,
         FEE_RECIPIENT,
         auto_slot=True,
-        mqtt_broker=BROKER
+        mqtt_broker=BROKER,
+        mqtt_id=MQTT_ID,
+        mqtt_username=MQTT_USERNAME,
+        mqtt_password=MQTT_PASSWORD,
+        verbose=VERBOSE
     )
 
     bidder.set_wl_bid_addresses(WL_BID_ADDRESSES)

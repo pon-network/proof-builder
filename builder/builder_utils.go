@@ -17,9 +17,9 @@ var (
 
 func (b *Builder) DataCleanUp() {
 	b.slotMu.Lock()
+	defer b.slotMu.Unlock()
 	b.slotSubmissionsLock.Lock()
 	defer b.slotSubmissionsLock.Unlock()
-	defer b.slotMu.Unlock()
 
 	b.beacon.BeaconData.Mu.Lock()
 	currentSlot := b.beacon.BeaconData.CurrentSlot
@@ -73,7 +73,7 @@ func (b *Builder) DataCleanUp() {
 }
 
 func ComputeWithdrawalsRoot(w []*capella.Withdrawal) (phase0.Root, error) {
-	if w == nil || len(w) == 0 {
+	if len(w) == 0 {
 		emptyRoot := phase0.Root{}
 		emptyHash := common.HexToHash(EmptyWithdrawalMerkleRoot)
 		copy(emptyRoot[:], emptyHash.Bytes()[:])

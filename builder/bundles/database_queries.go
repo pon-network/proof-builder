@@ -2,6 +2,7 @@ package bundles
 
 import (
 	"fmt"
+	"math/big"
 	"time"
 
 	bbTypes "github.com/ethereum/go-ethereum/builder/types"
@@ -59,13 +60,22 @@ func (s *BundleService) GetBundlesByBlockNumber(blockNumber uint64) ([]bundleTyp
 	return blockBundles, nil
 }
 
-func (s *BundleService) GetTotalPendingBundleGasForBlockNumber(blockNumber uint64) (uint64, error) {
-	var totalBundleGas uint64
-	err := s.db.Get(&totalBundleGas, "SELECT COALESCE(SUM(bundle_total_gas), 0) FROM blockbundles WHERE block_number=$1 AND added=false AND failed_retry_count < $2", blockNumber, maxRetryCount)
+func (s *BundleService) GetTotalPendingBundleGasForBlockNumber(blockNumber uint64) (*big.Int, error) {
+	var totalBundleGas big.Int
+	var totalBundleGasString string
+	err := s.db.Get(&totalBundleGasString, "SELECT COALESCE(TOTAL(bundle_total_gas), 0) FROM blockbundles WHERE block_number=$1 AND added=false AND failed_retry_count < $2", blockNumber, maxRetryCount)
 	if err != nil {
-		return 0, err
+		return big.NewInt(0), err
 	}
-	return totalBundleGas, nil
+	totalBundleGasString, err = bbTypes.ConvertScientificToDecimal(totalBundleGasString)
+	if err != nil {
+		return big.NewInt(0), err
+	}
+	_, ok := totalBundleGas.SetString(totalBundleGasString, 10)
+	if !ok {
+		return big.NewInt(0), fmt.Errorf("failed to convert string to big.Int")
+	}
+	return &totalBundleGas, nil
 }
 
 func (s *BundleService) GetPendingBundlesByBlockNumber() ([]bundleTypes.BuilderBundleEntry, error) {

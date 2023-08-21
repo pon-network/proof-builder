@@ -646,6 +646,13 @@ var (
 		Value:    "",
 		Category: flags.BuilderCategory,
 	}
+	BuilderPayoutPoolTxGas = &cli.Uint64Flag{
+		Name:     "builder.payout_pool_tx_gas",
+		Usage:    "Gas limit for payout pool transactions",
+		EnvVars:  []string{"BUILDER_PAYOUT_POOL_TX_GAS"},
+		Value:    miner.DefaultConfig.BuilderPayoutPoolTxGas,
+		Category: flags.BuilderCategory,
+	}
 	BuilderRPBS = &cli.StringFlag{
 		Name:     "builder.rpbs",
 		Usage:    "RPBS service to connect to",
@@ -1840,6 +1847,13 @@ func setMiner(ctx *cli.Context, cfg *miner.Config) {
 			Fatalf("-%s: builder wallet private key is required for PoN Builder", BuilderWalletPrivateKey.Name)
 			return
 		}
+
+		if ctx.IsSet(BuilderPayoutPoolTxGas.Name) {
+			cfg.BuilderPayoutPoolTxGas = ctx.Uint64(BuilderPayoutPoolTxGas.Name)
+		} else {
+			cfg.BuilderPayoutPoolTxGas = miner.DefaultConfig.BuilderPayoutPoolTxGas
+		}
+
 	}
 
 }

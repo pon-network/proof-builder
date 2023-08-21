@@ -50,8 +50,8 @@ func NewMultiBeaconClient(beaconUrls []string) (*MultiBeaconClient, error) {
 		SlotProposerMap:          make(beaconData.SlotProposerMap),
 		SlotPayloadAttributesMap: make(beaconData.SlotPayloadAttributesMap),
 		RandaoMap:                make(beaconData.RandaoMap),
-		HeadSlotC:                make(chan beaconTypes.HeadEventData),
-		PayloadAttributesC:       make(chan beaconTypes.PayloadAttributesEventData),
+		HeadSlotC:                make(chan beaconTypes.HeadEventData, 64),
+		PayloadAttributesC:       make(chan beaconTypes.PayloadAttributesEventData, 64),
 	}}, nil
 }
 

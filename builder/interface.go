@@ -41,4 +41,6 @@ type IEthService interface {
 	GetTxPool() *txpool.TxPool
 	GetBlockChain() *core.BlockChain
 	Backend() *eth.Ethereum
+	GetPayoutPoolTxGas() uint64
+	GetBlockGasCeil() uint64
 }

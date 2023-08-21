@@ -44,7 +44,7 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 	)
 
 	// Updates the readyBlock with the new block if it is different and better than the current block ready for submission
-	sealedBlockCallback := func(block *types.Block, fees *big.Int, bidAmount uint64, payoutPoolTx []byte, triedBundles []bundleTypes.BuilderBundle, err error) {
+	sealedBlockCallback := func(block *types.Block, fees *big.Int, bidAmount *big.Int, payoutPoolTx []byte, triedBundles []bundleTypes.BuilderBundle, err error) {
 
 		processingMu.Lock()
 		defer processingMu.Unlock()
@@ -62,7 +62,8 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 		if err != nil {
 			log.Error("block builder error", "err", err)
 			if !successfulSubmission {
-				*buildingErr = fmt.Errorf("block builder error: %w", err)
+				errMsg := fmt.Errorf("block builder error: %w", err)
+				*buildingErr = errMsg
 			}
 			return
 		}
@@ -70,7 +71,17 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 		if payoutPoolTx == nil {
 			log.Error("could not create payout pool transaction")
 			if !successfulSubmission {
-				*buildingErr = errors.New("could not create payout pool transaction")
+				errMsg := errors.New("could not create payout pool transaction")
+				*buildingErr = errMsg
+			}
+			return
+		}
+
+		if bidAmount == nil {
+			log.Error("block builder returned nil bid amount")
+			if !successfulSubmission {
+				errMsg := errors.New("block builder returned nil bid amount")
+				*buildingErr = errMsg
 			}
 			return
 		}
@@ -82,7 +93,8 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 		if err != nil {
 			log.Error("block builder error", "err", err)
 			if !successfulSubmission {
-				*buildingErr = fmt.Errorf("block builder error: %w", err)
+				errMsg := fmt.Errorf("block builder error: %w", err)
+				*buildingErr = errMsg
 			}
 			return
 		}
@@ -105,7 +117,8 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 			if len(executionPayloadEnvelope.ExecutionPayload.Transactions) < 2 {
 				log.Error("block builder error", "err", "no transactions in block aside from payout pool transaction. Ignoring block")
 				if !successfulSubmission {
-					*buildingErr = errors.New("no transactions to fill block aside from payout pool transaction. Ignoring block till transactions are available or mempool is ready")
+					errMsg := errors.New("no transactions to fill block aside from payout pool transaction. Ignoring block till transactions are available or mempool is ready")
+					*buildingErr = errMsg
 				}
 				return
 			}
@@ -138,7 +151,8 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 			if len(executionPayloadEnvelope.ExecutionPayload.Transactions) < 2 {
 				log.Error("block builder error", "err", "no transactions in block aside from payout pool transaction. Ignoring block")
 				if !successfulSubmission {
-					*buildingErr = errors.New("no transactions could be filled in block aside from payout pool transaction. Ignoring block, till transactions are available or mempool prepared")
+					errMsg := errors.New("no transactions could be filled in block aside from payout pool transaction. Ignoring block, till transactions are available or mempool prepared")
+					*buildingErr = errMsg
 				}
 				return
 			}
@@ -175,7 +189,7 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 		} else {
 			log.Info("new block does not increase block value, skipping", "blockValue", fees, "existingValue", readyBlock.blockValue)
 		}
-		return
+
 	}
 
 	// resubmits block builder requests to workers to build blocks
@@ -366,7 +380,8 @@ blockBuilder:
 		processingMu.Lock()
 		if *buildingErr == nil {
 			// Then it means the context was cancelled or deadline reached before a block was submitted
-			*buildingErr = fmt.Errorf("Failed to submit any block on time: context cancelled / slot submission deadline reached. slot: %d", slot)
+			errMsg := fmt.Errorf("failed to submit any block on time: context cancelled / slot submission deadline reached. slot: %d", slot)
+			*buildingErr = errMsg
 		}
 		processingMu.Unlock()
 

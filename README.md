@@ -85,6 +85,7 @@ geth [GETH_FLAGS] \
 --builder.listen_addr <listen_addr> \
 --builder.public_accesspoint <public_accesspoint> \
 --builder.relay_endpoint <relay_endpoint> \
+--builder.payout_pool_tx_gas <payout_pool_tx_gas> \
 --builder.secret_key <secret_key> \
 --builder.wallet_private_key <wallet_private_key> \
 --builder.rpbs <rpbs_service_base_url> \
@@ -111,6 +112,7 @@ Make sure to replace the values enclosed in `<` and `>` with the appropriate val
 | `--builder.listen_addr` | Listen address for the PoN Builder service locally | `""` | Yes |
 | `--builder.public_accesspoint` | Public accesspoint for remote relay to communicate with the builder | `""` | Yes |
 | `--builder.relay_endpoint` | Relay endpoint in the format of `https://<payout_pool_address>@<relay_endpoint>` | `""` | Yes |
+| `--builder.payout_pool_tx_gas` | Gas cost for payout pool transactions in a block | `300000` | No |
 | `--builder.wallet_private_key` | Wallet private key | `""` | Yes |
 | `--builder.secret_key` | BLS Secret key | `""` | Yes |
 | `--builder.rpbs` | RPBS Service endpoint | `""` | Yes |
@@ -133,6 +135,7 @@ For example, to enable the PoN Builder with the following configuration:
 * `--builder.listen_addr`: `:10000`
 * `--builder.public_accesspoint`: `https://builder.0xblockswap.com`
 * `--builder.relay_endpoint`: `https://0x1234abcd1234abcd1234abcd@relayer.0xblockswap.com`
+* `--builder.payout_pool_tx_gas`: `300000`
 * `--builder.wallet_private_key`: `0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd`
 * `--builder.secret_key`: `0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd`
 * `--builder.rpbs`: `http://localhost:3000`
@@ -156,6 +159,7 @@ geth --goerli --datadir /home/ubuntu/execution --authrpc.addr localhost --authrp
 --builder.listen_addr :10000 \
 --builder.public_accesspoint https://builder.0xblockswap.com \
 --builder.relay_endpoint https://0x1234abcd1234abcd1234abcd@relayer.0xblockswap.com \
+--builder.payout_pool_tx_gas 300000 \
 --builder.wallet_private_key 0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd \
 --builder.secret_key 0x1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd \
 --builder.rpbs http://localhost:3000 \
@@ -186,10 +190,11 @@ Endpoint: `POST /eth/v1/builder/submit_block_bid`
 This endpoint is used to submit a block bid to the builder service which bulds a block and submits the block bid to the relay. The request body should be a JSON object containing the following fields:
 
 * `slot`: the block slot for the bid (optional, if not provided the builder will use the current slot)
-* `bidAmount`: the bid amount in wei
-* `transactions`: an array of signed transaction RLP encoded bytes representing the transactions to prioritize and include in the block bid
-* `suggestedFeeRecipient`: the suggested fee recipient address for the block
-* `noMempoolTxs`: a boolean value indicating whether to include mempool transactions in the block bid
+* `bidAmount`: the bid amount in wei (required)
+* `payoutPoolAddress`: the payout pool address for the block bid (optional, if not provided the builder will use the payout pool address provided in the builder configuration for the relays)
+* `transactions`: an array of signed transaction RLP encoded bytes representing the transactions to prioritize and include in the block bid (optional)
+* `suggestedFeeRecipient`: the suggested fee recipient address for the block (required else defaults to null address)
+* `noMempoolTxs`: a boolean value indicating whether to include mempool transactions in the block bid (optional, defaults to false)
 
 Sample scripts are provided within `scripts/` to generate and submit block bids.
 
@@ -200,10 +205,11 @@ Endpoint: `POST /eth/v1/builder/submit_block_bounty_bid`
 This endpoint is used to submit a block bid to the builder service which bulds a block and submits the block bid to the relay. The request body should be a JSON object containing the following fields:
 
 * `slot`: the block slot for the bid (required)
-* `bidAmount`: the bid amount in wei
+* `bidAmount`: the bid amount in wei (required)
+* `payoutPoolAddress`: the payout pool address for the block bid (optional, if not provided the builder will use the payout pool address provided in the builder configuration for the relays)
 * `transactions`: an array of signed transaction RLP encoded bytes representing the transactions to prioritize and include in a new the bounty block (optional)
-* `suggestedFeeRecipient`: the suggested fee recipient address for the block
-* `noMempoolTxs`: a boolean value indicating whether to include mempool transactions in the block bid
+* `suggestedFeeRecipient`: the suggested fee recipient address for the block (required else defaults to null address)
+* `noMempoolTxs`: a boolean value indicating whether to include mempool transactions in the block bid (optinal, defaults to false)
 
 ### Submit Blinded Block
 
@@ -610,6 +616,19 @@ Error responses:
     }
 }
 ```
+
+**Important notice about bundles:** Bundles are processed using the following priority rules:
+
+- **Block Number:** Earliest block numbers come first.
+- **Max Payout:** Higher total gas values are prioritized.
+- **Timestamp:** Earlier received timestamps are processed earlier.
+- **Max Timestamp:** Bundles with the earliest max timestamp are processed first.
+- **Reverting Transactions:** Fewer reverting transactions lead to higher priority.
+- **Total Transactions:** Bundles with fewer transactions are processed sooner.
+
+The algorithm proceeds to the next priority only if the current priority is a tie.
+
+
 
 ### Other Geth RPC Calls
 

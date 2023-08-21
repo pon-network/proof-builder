@@ -143,6 +143,7 @@ var (
 	builderApiFlags = []cli.Flag{
 		utils.BuilderEnabled,
 		utils.BuilderWalletPrivateKey,
+		utils.BuilderPayoutPoolTxGas,
 		utils.BuilderSecretKey,
 		utils.BuilderListenAddr,
 		utils.BuilderBeaconEndpoints,

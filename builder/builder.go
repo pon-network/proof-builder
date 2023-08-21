@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"math/big"
 
 	_ "os"
 	"sync"
@@ -66,11 +67,11 @@ type Builder struct {
 
 	slotSubmissionsLock    sync.Mutex
 	slotSubmissionsChan    map[uint64]chan blockProperties
-	slotBidCompleteChan    map[uint64]chan struct{ bidAmount uint64 }
-	slotBountyCompleteChan map[uint64]chan struct{ bidAmount uint64 }
+	slotBidCompleteChan    map[uint64]chan struct{ bidAmount *big.Int }
+	slotBountyCompleteChan map[uint64]chan struct{ bidAmount *big.Int }
 	slotSubmissions        map[uint64][]builderTypes.BlockBidResponse
-	slotBidAmounts         map[uint64][]uint64 // Tracking of normal auction bid amounts for a slot
-	slotBountyAmount       map[uint64]uint64   // Submitted bounty bid amount for a slot
+	slotBidAmounts         map[uint64][]*big.Int // Tracking of normal auction bid amounts for a slot
+	slotBountyAmount       map[uint64]*big.Int   // Submitted bounty bid amount for a slot
 
 	// Execution payload cache: map of slot -> map of block hash -> execution payload
 	executionPayloadCache map[uint64]map[string]engine.ExecutableData
@@ -124,11 +125,11 @@ func NewBuilder(sk *bls.SecretKey, blockValidator *core.BlockValidator, beaconCl
 		slotBountyAttrs: make(map[uint64][]builderTypes.BuilderPayloadAttributes),
 
 		slotSubmissionsChan: make(map[uint64]chan blockProperties),
-		slotBidCompleteChan: make(map[uint64]chan struct{ bidAmount uint64 }),
-		slotBountyCompleteChan: make(map[uint64]chan struct{ bidAmount uint64 }),
+		slotBidCompleteChan: make(map[uint64]chan struct{ bidAmount *big.Int }),
+		slotBountyCompleteChan: make(map[uint64]chan struct{ bidAmount *big.Int }),
 		slotSubmissions:     make(map[uint64][]builderTypes.BlockBidResponse),
-		slotBidAmounts:      make(map[uint64][]uint64),
-		slotBountyAmount:    make(map[uint64]uint64),
+		slotBidAmounts:      make(map[uint64][]*big.Int),
+		slotBountyAmount:    make(map[uint64]*big.Int),
 
 		executionPayloadCache: make(map[uint64]map[string]engine.ExecutableData),
 	}, nil

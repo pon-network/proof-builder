@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS blockbundles (
 
 	bundle_hash TEXT NOT NULL,
 	txs TEXT NOT NULL,
-	block_number INTEGER NOT NULL,
+	block_number NUMERIC NOT NULL,
 	min_timestamp INTEGER NOT NULL,
 	max_timestamp INTEGER NOT NULL,
 	reverting_tx_hashes TEXT NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS blockbundles (
 	builder_signature TEXT NOT NULL,
 
 	bundle_transaction_count INTEGER NOT NULL,
-	bundle_total_gas INTEGER NOT NULL,
+	bundle_total_gas NUMERIC NOT NULL,
 
 	added INTEGER NOT NULL DEFAULT 0,
 	error INTEGER NOT NULL DEFAULT 0,
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS sentbundles (
 
 	block_hash TEXT NOT NULL,
 
-	slot INTEGER NOT NULL,
+	slot NUMERIC NOT NULL,
 
 	bundle_hash TEXT NOT NULL
 
