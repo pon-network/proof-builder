@@ -7,6 +7,7 @@ import (
 	"math/big"
 	_ "os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/beacon/engine"
@@ -19,14 +20,17 @@ import (
 	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 )
 
+var errEmptyBlock error = errors.New("no transactions to fill block aside from payout pool transaction. Ignoring block till transactions are available or mempool is ready")
+
 type blockProperties struct {
-	block               *types.Block
-	blockExecutableData *engine.ExecutableData
-	payoutPoolTx        []byte
-	blockValue          *big.Int
-	triedBundles        []bundleTypes.BuilderBundle
-	builtTime           time.Time
-	bountyBid           bool
+	attrs                        *builder.BuilderPayloadAttributes
+	block                        *types.Block
+	blockExecutionPayloadEnvlope *engine.ExecutionPayloadEnvelope
+	payoutPoolTx                 []byte
+	blockValue                   *big.Int
+	triedBundles                 []bundleTypes.BuilderBundle
+	builtTime                    time.Time
+	bountyBid                    bool
 }
 
 func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, slot uint64, proposerPubkey commonTypes.PublicKey, submissionChan chan blockProperties, buildingErr *error) {
@@ -38,13 +42,25 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 	defer cancel()
 
 	var (
-		readyBlock           blockProperties
-		processingMu         sync.Mutex
-		successfulSubmission bool
+		readyBlock                 blockProperties
+		readyBountyBlock           blockProperties
+		processingMu               sync.Mutex
+		successfulSubmissions      atomic.Uint32
+		successfulBountySubmission atomic.Uint32
 	)
 
 	// Updates the readyBlock with the new block if it is different and better than the current block ready for submission
-	sealedBlockCallback := func(block *types.Block, fees *big.Int, bidAmount *big.Int, payoutPoolTx []byte, triedBundles []bundleTypes.BuilderBundle, err error) {
+	sealedBlockCallback := func(
+		attrs *builder.BuilderPayloadAttributes,
+		block *types.Block,
+		sidecars []*types.BlobTxSidecar,
+		fees *big.Int,
+		bountyBlock bool,
+		bidAmount *big.Int,
+		payoutPoolTx []byte,
+		triedBundles []bundleTypes.BuilderBundle,
+		err error,
+	) {
 
 		processingMu.Lock()
 		defer processingMu.Unlock()
@@ -54,14 +70,17 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 		}
 
 		b.slotSubmissionsLock.Lock()
-		if !successfulSubmission && len(b.slotSubmissions[slot]) > 0 {
-			successfulSubmission = true
+		if successfulSubmissions.Load() == 0 && len(b.slotSubmissions[slot]) > 0 {
+			successfulSubmissions.Store(uint32(len(b.slotSubmissions[slot])))
+		}
+		if successfulBountySubmission.Load() == 0 && b.slotBountyAmount[slot] != nil && b.slotBountyAmount[slot].Sign() > 0 {
+			successfulBountySubmission.Store(1)
 		}
 		b.slotSubmissionsLock.Unlock()
 
 		if err != nil {
 			log.Error("block builder error", "err", err)
-			if !successfulSubmission {
+			if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
 				errMsg := fmt.Errorf("block builder error: %w", err)
 				*buildingErr = errMsg
 			}
@@ -70,7 +89,7 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 
 		if payoutPoolTx == nil {
 			log.Error("could not create payout pool transaction")
-			if !successfulSubmission {
+			if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
 				errMsg := errors.New("could not create payout pool transaction")
 				*buildingErr = errMsg
 			}
@@ -79,8 +98,36 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 
 		if bidAmount == nil {
 			log.Error("block builder returned nil bid amount")
-			if !successfulSubmission {
+			if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
 				errMsg := errors.New("block builder returned nil bid amount")
+				*buildingErr = errMsg
+			}
+			return
+		}
+
+		if fees == nil {
+			log.Error("block builder returned nil block value")
+			if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
+				errMsg := errors.New("block builder returned nil block value")
+				*buildingErr = errMsg
+			}
+			return
+		}
+
+		if attrs.BidAmount == nil {
+			log.Error("block builder returned nil bid amount in attributes")
+			if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
+				errMsg := errors.New("block builder returned nil bid amount in attributes")
+				*buildingErr = errMsg
+			}
+			return
+		}
+
+		// Sanity check bidAmount and attrs.BidAmount are the same
+		if attrs.BidAmount.Cmp(bidAmount) != 0 {
+			log.Error("block builder returned different bid amount than requested", "requested", attrs.BidAmount, "returned", bidAmount)
+			if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
+				errMsg := errors.New("block builder returned different bid amount than requested")
 				*buildingErr = errMsg
 			}
 			return
@@ -92,45 +139,37 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 		err = b.blockValidator.ValidateBody(block)
 		if err != nil {
 			log.Error("block builder error", "err", err)
-			if !successfulSubmission {
+			if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
 				errMsg := fmt.Errorf("block builder error: %w", err)
 				*buildingErr = errMsg
 			}
 			return
 		}
 
-		bountyBlock := false
-		b.slotBountyMu.Lock()
-		for _, bountyAttrs := range b.slotBountyAttrs[slot] {
-			if bidAmount == bountyAttrs.BidAmount {
-				bountyBlock = true
-				break
-			}
-		}
-		b.slotBountyMu.Unlock()
+		if readyBlock.blockValue == nil && !bountyBlock {
+			// If this is the first block received, then we should submit it
 
-		if readyBlock.blockValue == nil {
-			executionPayloadEnvelope := engine.BlockToExecutableData(block, fees)
+			executionPayloadEnvelope := engine.BlockToExecutableData(block, fees, sidecars)
 
 			// check the length of transaction list is greater than 1, since the payout pool transaction counts as one
 			// Handles the case where geth is still preparing the mempool after syncing
 			if len(executionPayloadEnvelope.ExecutionPayload.Transactions) < 2 {
 				log.Error("block builder error", "err", "no transactions in block aside from payout pool transaction. Ignoring block")
-				if !successfulSubmission {
-					errMsg := errors.New("no transactions to fill block aside from payout pool transaction. Ignoring block till transactions are available or mempool is ready")
-					*buildingErr = errMsg
+				if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
+					*buildingErr = errEmptyBlock 
 				}
 				return
 			}
 
 			readyBlock = blockProperties{
-				block:               block,
-				blockExecutableData: executionPayloadEnvelope.ExecutionPayload,
-				blockValue:          executionPayloadEnvelope.BlockValue,
-				payoutPoolTx:        payoutPoolTx,
-				triedBundles:        triedBundles,
-				builtTime:           time.Now(),
-				bountyBid:           bountyBlock,
+				attrs:                        attrs,
+				block:                        block,
+				blockExecutionPayloadEnvlope: executionPayloadEnvelope,
+				blockValue:                   executionPayloadEnvelope.BlockValue,
+				payoutPoolTx:                 payoutPoolTx,
+				triedBundles:                 triedBundles,
+				builtTime:                    time.Now(),
+				bountyBid:                    bountyBlock,
 			}
 
 			log.Info("block builder first block", "blockValue", fees)
@@ -140,31 +179,31 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 			default:
 			}
 
-		} else if fees.Cmp(readyBlock.blockValue) >= 0 {
+		} else if readyBlock.blockValue != nil && fees.Cmp(readyBlock.blockValue) >= 0 && !bountyBlock {
 			// Allow greater than or equal to, so that we can submit the same block again if geth creates a new block with the same gasUsed
 			// This can happen if the block builder is restarted, and the same block is built again
 			// This is a workaround for cases where sometimes we build a block with same gas used, or builds a block with different
 			// logs and extraData than the previous but with the same gasUsed
-			executionPayloadEnvelope := engine.BlockToExecutableData(block, fees)
+			executionPayloadEnvelope := engine.BlockToExecutableData(block, fees, sidecars)
 
 			// check the length of transaction list is greater than 1, since the payout pool transaction counts as one
 			if len(executionPayloadEnvelope.ExecutionPayload.Transactions) < 2 {
 				log.Error("block builder error", "err", "no transactions in block aside from payout pool transaction. Ignoring block")
-				if !successfulSubmission {
-					errMsg := errors.New("no transactions could be filled in block aside from payout pool transaction. Ignoring block, till transactions are available or mempool prepared")
-					*buildingErr = errMsg
+				if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
+					*buildingErr = errEmptyBlock 
 				}
 				return
 			}
 
 			readyBlock = blockProperties{
-				block:               block,
-				blockExecutableData: executionPayloadEnvelope.ExecutionPayload,
-				blockValue:          executionPayloadEnvelope.BlockValue,
-				payoutPoolTx:        payoutPoolTx,
-				triedBundles:        triedBundles,
-				builtTime:           time.Now(),
-				bountyBid:           bountyBlock,
+				attrs:                        attrs,
+				block:                        block,
+				blockExecutionPayloadEnvlope: executionPayloadEnvelope,
+				blockValue:                   executionPayloadEnvelope.BlockValue,
+				payoutPoolTx:                 payoutPoolTx,
+				triedBundles:                 triedBundles,
+				builtTime:                    time.Now(),
+				bountyBid:                    bountyBlock,
 			}
 
 			log.Info("block builder new best block", "blockValue", fees)
@@ -174,7 +213,7 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 			default:
 			}
 
-		} else if !successfulSubmission {
+		} else if successfulSubmissions.Load() == 0 && !bountyBlock && readyBlock.blockValue != nil {
 			// Even if the block is not better than the current block ready for submission,
 			// and there have been no block submissions yet or encountered an error in submission
 			// trigger to submit again
@@ -182,12 +221,99 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 			log.Info("block builder resubmitting first block", "blockValue", readyBlock.blockValue)
 
 			select {
+			case submissionChan <- readyBlock: // This should be the same block as the previous submission and would not be nil since we have already checked for nil
+			default:
+			}
+
+		} else if readyBountyBlock.blockValue == nil && bountyBlock {
+			// If this is the first bounty block received, then we should attempt to submit it
+			executionPayloadEnvlope := engine.BlockToExecutableData(block, fees, sidecars)
+
+			// check the length of transaction list is greater than 1, since the payout pool transaction counts as one
+			if len(executionPayloadEnvlope.ExecutionPayload.Transactions) < 2 {
+				log.Error("block builder error", "err", "no transactions in block aside from payout pool transaction. Ignoring block")
+				if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
+					*buildingErr = errEmptyBlock 
+				}
+				return
+			}
+
+			readyBountyBlock = blockProperties{
+				attrs:                        attrs,
+				block:                        block,
+				blockExecutionPayloadEnvlope: executionPayloadEnvlope,
+				blockValue:                   executionPayloadEnvlope.BlockValue,
+				payoutPoolTx:                 payoutPoolTx,
+				triedBundles:                 triedBundles,
+				builtTime:                    time.Now(),
+				bountyBid:                    bountyBlock,
+			}
+
+			log.Info("block builder new bounty block", "blockValue", fees)
+
+			select {
 			case submissionChan <- readyBlock:
 			default:
 			}
 
+		} else if readyBountyBlock.blockValue != nil && fees.Cmp(readyBountyBlock.blockValue) >= 0 && bountyBlock && successfulBountySubmission.Load() == 0 {
+			// If there is a better bounty block, then we should attempt to update the bounty block if we have not submitted a bounty block yet
+			executionPayloadEnvlope := engine.BlockToExecutableData(block, fees, sidecars)
+
+			// check the length of transaction list is greater than 1, since the payout pool transaction counts as one
+			if len(executionPayloadEnvlope.ExecutionPayload.Transactions) < 2 {
+				log.Error("block builder error", "err", "no transactions in block aside from payout pool transaction. Ignoring block")
+				if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
+					*buildingErr = errEmptyBlock 
+				}
+				return
+			}
+
+			readyBountyBlock = blockProperties{
+				attrs:                        attrs,
+				block:                        block,
+				blockExecutionPayloadEnvlope: executionPayloadEnvlope,
+				blockValue:                   executionPayloadEnvlope.BlockValue,
+				payoutPoolTx:                 payoutPoolTx,
+				triedBundles:                 triedBundles,
+				builtTime:                    time.Now(),
+				bountyBid:                    bountyBlock,
+			}
+
+			log.Info("block builder new best bounty block", "blockValue", fees)
+
+			select {
+			case submissionChan <- readyBlock:
+			default:
+			}
+
+		} else if successfulBountySubmission.Load() == 0 && readyBountyBlock.blockValue != nil && bountyBlock {
+			// Even if the block is not better than the current bounty block ready for submission,
+			// and there have been no block submissions yet or encountered an error in submission
+			// trigger to the previous bounty block again
+
+			log.Info("block builder resubmitting first bounty block", "blockValue", readyBountyBlock.blockValue)
+
+			select {
+			case submissionChan <- readyBountyBlock: // This should be the same block as the previous submission attempt and would not be nil since we have already checked for nil
+			default:
+			}
+
+		} else if successfulBountySubmission.Load() == 1 && bountyBlock {
+
+			log.Info("already submitted bounty block bid, skipping", "blockValue", fees, "existingValue", readyBountyBlock.blockValue)
+		
+		} else if successfulSubmissions.Load() == 2 && !bountyBlock {
+
+			log.Info("already submitted 2 block bids for slot, skipping", "blockValue", fees, "existingValue", readyBlock.blockValue)
+
 		} else {
-			log.Info("new block does not increase block value, skipping", "blockValue", fees, "existingValue", readyBlock.blockValue)
+
+			if bountyBlock {
+				log.Info("new bounty block does not increase block value, skipping", "blockValue", fees, "existingValue", readyBountyBlock.blockValue)
+			} else {
+				log.Info("new block does not increase block value, skipping", "blockValue", fees, "existingValue", readyBlock.blockValue)
+			}
 		}
 
 	}
@@ -294,8 +420,11 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 		log.Info("Building Block with Geth", "slot", attrs.Slot, "parent", attrs.HeadHash)
 
 		b.slotSubmissionsLock.Lock()
-		if !successfulSubmission && len(b.slotSubmissions[attrs.Slot]) > 0 {
-			successfulSubmission = true
+		if successfulSubmissions.Load() == 0 && len(b.slotSubmissions[slot]) > 0 {
+			successfulSubmissions.Store(uint32(len(b.slotSubmissions[slot])))
+		}
+		if successfulBountySubmission.Load() == 0 && b.slotBountyAmount[slot] != nil && b.slotBountyAmount[slot].Sign() > 0 {
+			successfulBountySubmission.Store(1)
 		}
 		b.slotSubmissionsLock.Unlock()
 
@@ -337,11 +466,11 @@ func (b *Builder) prepareBlock(slotCtx context.Context, slotTimeCutOff uint64, s
 			attrs.Bundles = updatedBundles
 		}
 
-		err := b.eth.BuildBlock(&attrs, sealedBlockCallback)
+		err := b.eth.BuildBlock(&attrs, useBountyAttrs, sealedBlockCallback)
 		if err != nil {
 			log.Warn("Failed to build block", "err", err)
 			processingMu.Lock()
-			if !successfulSubmission {
+			if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
 				*buildingErr = err
 			}
 			processingMu.Unlock()
@@ -371,12 +500,15 @@ blockBuilder:
 	}
 
 	b.slotSubmissionsLock.Lock()
-	if !successfulSubmission && len(b.slotSubmissions[slot]) > 0 {
-		successfulSubmission = true
+	if successfulSubmissions.Load() == 0 && len(b.slotSubmissions[slot]) > 0 {
+		successfulSubmissions.Store(uint32(len(b.slotSubmissions[slot])))
+	}
+	if successfulBountySubmission.Load() == 0 && b.slotBountyAmount[slot] != nil && b.slotBountyAmount[slot].Sign() > 0 {
+		successfulBountySubmission.Store(1)
 	}
 	b.slotSubmissionsLock.Unlock()
 
-	if !successfulSubmission {
+	if successfulSubmissions.Load() == 0 && successfulBountySubmission.Load() == 0 {
 		processingMu.Lock()
 		if *buildingErr == nil {
 			// Then it means the context was cancelled or deadline reached before a block was submitted

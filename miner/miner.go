@@ -35,6 +35,9 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
+
+	bundleTypes "github.com/bsn-eng/pon-golang-types/bundles"
+	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
 )
 
 // Backend wraps all methods required for mining. Only full node is capable
@@ -53,16 +56,16 @@ type Config struct {
 	GasPrice  *big.Int       // Minimum gas price for mining a transaction
 	Recommit  time.Duration  // The time interval for miner to re-create mining work.
 
-	NewPayloadTimeout time.Duration // The maximum time allowance for creating a new payload
+	NewPayloadTimeout       time.Duration     // The maximum time allowance for creating a new payload
 	BuilderWalletPrivateKey *ecdsa.PrivateKey // The private key used to sign the builder transaction to PoN network Payout Pool
 	BuilderWalletAddress    common.Address    // The address of the builder wallet to make the builder transaction to PoN network Payout Pool
-	BuilderPayoutPoolTxGas uint64            // The gas used to make the builder transaction to PoN network Payout Pool
+	BuilderPayoutPoolTxGas  uint64            // The gas used to make the builder transaction to PoN network Payout Pool
 }
 
 // DefaultConfig contains default settings for miner.
 var DefaultConfig = Config{
-	GasCeil:  30000000,
-	GasPrice: big.NewInt(params.GWei),
+	GasCeil:                30000000,
+	GasPrice:               big.NewInt(params.GWei),
 	BuilderPayoutPoolTxGas: 300000,
 
 	// The default recommit time is chosen as two seconds since
@@ -81,7 +84,7 @@ type Miner struct {
 	exitCh  chan struct{}
 	startCh chan struct{}
 	stopCh  chan struct{}
-	worker  *multiWorker
+	worker  *worker
 
 	wg sync.WaitGroup
 }
@@ -94,7 +97,7 @@ func New(eth Backend, config *Config, chainConfig *params.ChainConfig, mux *even
 		exitCh:  make(chan struct{}),
 		startCh: make(chan struct{}),
 		stopCh:  make(chan struct{}),
-		worker:  newMultiWorker(config, chainConfig, engine, eth, mux, isLocalBlock, true),
+		worker:  newWorker(config, chainConfig, engine, eth, mux, isLocalBlock, true),
 	}
 	miner.wg.Add(1)
 	go miner.update()
@@ -136,16 +139,22 @@ func (miner *Miner) update() {
 					shouldStart = true
 					log.Info("Mining aborted due to sync")
 				}
+				miner.worker.syncing.Store(true)
+
 			case downloader.FailedEvent:
 				canStart = true
 				if shouldStart {
 					miner.worker.start()
 				}
+				miner.worker.syncing.Store(false)
+
 			case downloader.DoneEvent:
 				canStart = true
 				if shouldStart {
 					miner.worker.start()
 				}
+				miner.worker.syncing.Store(false)
+
 				// Stop reacting to downloader events
 				events.Unsubscribe()
 			}
@@ -201,21 +210,24 @@ func (miner *Miner) SetRecommitInterval(interval time.Duration) {
 	miner.worker.setRecommitInterval(interval)
 }
 
-// Pending returns the currently pending block and associated state.
+// Pending returns the currently pending block and associated state. The returned
+// values can be nil in case the pending block is not initialized
 func (miner *Miner) Pending() (*types.Block, *state.StateDB) {
-	return miner.worker.regularWorker.pending()
+	return miner.worker.pending()
 }
 
-// PendingBlock returns the currently pending block.
+// PendingBlock returns the currently pending block. The returned block can be
+// nil in case the pending block is not initialized.
 //
 // Note, to access both the pending block and the pending state
 // simultaneously, please use Pending(), as the pending state can
 // change between multiple method calls
 func (miner *Miner) PendingBlock() *types.Block {
-	return miner.worker.regularWorker.pendingBlock()
+	return miner.worker.pendingBlock()
 }
 
 // PendingBlockAndReceipts returns the currently pending block and corresponding receipts.
+// The returned values can be nil in case the pending block is not initialized.
 func (miner *Miner) PendingBlockAndReceipts() (*types.Block, types.Receipts) {
 	return miner.worker.pendingBlockAndReceipts()
 }
@@ -230,40 +242,85 @@ func (miner *Miner) SetGasCeil(ceil uint64) {
 	miner.worker.setGasCeil(ceil)
 }
 
-// EnablePreseal turns on the preseal mining feature. It's enabled by default.
-// Note this function shouldn't be exposed to API, it's unnecessary for users
-// (miners) to actually know the underlying detail. It's only for outside project
-// which uses this library.
-func (miner *Miner) EnablePreseal() {
-	miner.worker.enablePreseal()
-}
-
-// DisablePreseal turns off the preseal mining feature. It's necessary for some
-// fake consensus engine which can seal blocks instantaneously.
-// Note this function shouldn't be exposed to API, it's unnecessary for users
-// (miners) to actually know the underlying detail. It's only for outside project
-// which uses this library.
-func (miner *Miner) DisablePreseal() {
-	miner.worker.disablePreseal()
-}
-
 // SubscribePendingLogs starts delivering logs from pending transactions
 // to the given channel.
 func (miner *Miner) SubscribePendingLogs(ch chan<- []*types.Log) event.Subscription {
-	return miner.worker.regularWorker.pendingLogsFeed.Subscribe(ch)
+	return miner.worker.pendingLogsFeed.Subscribe(ch)
 }
 
 // BuildPayload builds the payload according to the provided parameters.
 func (miner *Miner) BuildPayload(args *BuildPayloadArgs) (*Payload, error) {
-	return miner.worker.regularWorker.buildPayload(args)
+	return miner.worker.buildPayload(args)
 }
 
 // Get Payout Pool Tx Gas
 func (miner *Miner) GetPayoutPoolTxGas() uint64 {
-	return miner.worker.regularWorker.config.BuilderPayoutPoolTxGas
+	return miner.worker.config.BuilderPayoutPoolTxGas
 }
 
 // Get Block Gas ceil
 func (miner *Miner) GetBlockGasCeil() uint64 {
-	return miner.worker.regularWorker.config.GasCeil
+	return miner.worker.config.GasCeil
+}
+
+// Accepts the block, time at which orders were taken, bundles which were used to build the block and all bundles that were considered for the block
+type SealedBlockCallbackFn = func(attrs *builderTypes.BuilderPayloadAttributes, block *types.Block, sidecars []*types.BlobTxSidecar, fees *big.Int, bountyBlock bool, bidAmount *big.Int, payoutPoolTx []byte, triedBundles []bundleTypes.BuilderBundle, err error)
+
+// BuildBlockWithCallback requests to generate a sealing block according to the
+// given parameters. Regardless of whether the generation is successful or not,
+// there is always a result that will be returned.
+// The difference is that if the execution fails, the returned result is nil
+// and the concrete error is dropped silently.
+func (miner *Miner) BuildBlockWithCallback(
+	attrs *builderTypes.BuilderPayloadAttributes,
+	bountyBlock bool,
+	sealedBlockCallback SealedBlockCallbackFn,
+) (output chan *newPayloadResult /* result */, err error) {
+
+	output = make(chan *newPayloadResult, 1)
+
+	genParams := generateParams{
+		parentHash:            attrs.HeadHash,
+		timestamp:         uint64(attrs.Timestamp),
+		coinbase:          common.HexToAddress(attrs.SuggestedFeeRecipient.String()),
+		random:            attrs.Random,
+		noTxs:             attrs.NoMempoolTxs,
+		transactions:      attrs.Transactions,
+		bundles:           attrs.Bundles,
+		withdrawals:       attrs.Withdrawals,
+		payoutPoolAddress: attrs.PayoutPoolAddress,
+		bidAmount:         attrs.BidAmount,
+		gasLimit:          attrs.GasLimit,
+	}
+
+	res := miner.worker.getSealingBlock(&genParams)
+
+	if res == nil {
+		log.Error("PoN Builder engine error", "err", "failed to generate sealing block")
+		output <- nil
+		return output, fmt.Errorf("PoN Builder engine error: failed to generate sealing block")
+	}
+
+	if res.err != nil {
+		log.Error("PoN Builder engine error", "err", res.err)
+		output <- nil
+		return output, res.err
+	}
+
+	go sealedBlockCallback(
+		attrs,
+		res.block,
+		res.sidecars,
+		res.fees,
+		bountyBlock,
+		res.bidAmount,
+		res.payoutTx,
+		res.triedBundles,
+		res.err,
+	)
+
+	output <- res
+
+	return output, nil
+
 }

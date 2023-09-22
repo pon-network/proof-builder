@@ -13,6 +13,30 @@ func (s *DatabaseService) InsertBeaconBlock(signedBeaconBlock SignedBeaconBlockS
 
 	signedBeaconBlock.BidId = blockBid.ID
 
+	// Check if the block has already been submitted to the chain
+	var existingBlock SignedBeaconBlockSubmissionEntry
+	err = s.DB.Get(&existingBlock, `SELECT * FROM beaconblock WHERE bid_id = ?`, blockBid.ID)
+	if err == nil {
+		if existingBlock.SubmittedToChain {
+			log.Debug("Beacon block already submitted to chain", "bid_id", blockBid.ID)
+			return nil
+		}
+
+		// The block has already been inserted into the database, so just update the fields
+		_, err = s.DB.NamedExec(`UPDATE beaconblock SET
+			signed_beacon_block = :signed_beacon_block,
+			signature = :signature,
+			submitted_to_chain = :submitted_to_chain,
+			submission_error = :submission_error,
+			inserted_at = :inserted_at
+			WHERE bid_id = :bid_id`, signedBeaconBlock)
+		if err != nil {
+			log.Debug("Inserting beacon block Error updating beacon block", "err", err)
+			return err
+		}
+
+	}
+
 	// Add the signed beacon block to the database with block bid id
 	tx := s.DB.MustBegin()
 	_, err = tx.NamedExec(`INSERT INTO beaconblock

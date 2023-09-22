@@ -51,7 +51,7 @@ func NewMultiBeaconClient(beaconUrls []string) (*MultiBeaconClient, error) {
 		SlotPayloadAttributesMap: make(beaconData.SlotPayloadAttributesMap),
 		RandaoMap:                make(beaconData.RandaoMap),
 		HeadSlotC:                make(chan beaconTypes.HeadEventData, 64),
-		PayloadAttributesC:       make(chan beaconTypes.PayloadAttributesEventData, 64),
+		PayloadAttributesC:       make(chan beaconTypes.PayloadAttributesEvent, 64),
 	}}, nil
 }
 
@@ -82,6 +82,7 @@ func (b *MultiBeaconClient) waitSynced() {
 		if syncStatus != nil && !syncStatus.IsSyncing {
 			return
 		}
+		log.Info("Waiting for at least one client to be synced")
 		time.Sleep(5 * time.Second)
 	}
 
@@ -95,7 +96,6 @@ func (b *MultiBeaconClient) UpdateRandaoMap(slot uint64) {
 	// Get the randao for the slot
 	randao, err := b.Randao(slot)
 	if err != nil {
-		// log.Warn("failed to get randao", "slot", slot, "err", err)
 		return
 	}
 
@@ -132,6 +132,25 @@ func (b *MultiBeaconClient) UpdateValidatorMap() {
 		}(client)
 	}
 	wg.Wait()
+}
+
+func (b *MultiBeaconClient) UpdateForkVersion() {
+
+	// Get the fork version for the current head
+	forkName, forkVersion, err := b.GetForkVersion(0, true)
+	if err != nil {
+		log.Warn("failed to get latest fork version", "err", err)
+		return
+	}
+
+	// Update the fork version map
+	b.BeaconData.Mu.Lock()
+	if b.BeaconData.CurrentForkVersion != forkVersion && forkVersion != "" {
+		log.Info("fork version updated", "oldFork", b.BeaconData.CurrentForkVersion, "newFork", forkName)
+		b.BeaconData.CurrentForkVersion = forkName // i.e "altair", "bellatrix", "capella", etc
+	}
+	b.BeaconData.Mu.Unlock()
+
 }
 
 func (b *MultiBeaconClient) updateValidatorMap(client BeaconClient, epoch uint64) {

@@ -2,9 +2,10 @@ package database
 
 import (
 	"fmt"
-	bbTypes "github.com/ethereum/go-ethereum/builder/types"
 	"math/big"
 	"time"
+
+	bbTypes "github.com/ethereum/go-ethereum/builder/types"
 )
 
 func (s *DatabaseService) InsertBlindedBeaconBlock(signedBlindedBeaconBlock SignedBlindedBeaconBlockEntry, blockHash string) error {
@@ -16,6 +17,32 @@ func (s *DatabaseService) InsertBlindedBeaconBlock(signedBlindedBeaconBlock Sign
 	}
 
 	signedBlindedBeaconBlock.BidId = blockBid.ID
+
+	// Check if the block has already been added to the database
+	var existingBlock SignedBlindedBeaconBlockEntry
+	err = s.DB.Get(&existingBlock, `SELECT * FROM blindedbeaconblock WHERE bid_id = ?`, blockBid.ID)
+	if err == nil {
+
+		var submittedBlock SignedBeaconBlockSubmissionEntry
+		err = s.DB.Get(&submittedBlock, `SELECT * FROM beaconblock WHERE bid_id = ?`, blockBid.ID)
+		if err == nil {
+			if submittedBlock.SubmittedToChain {
+				// The block has already been submitted to the chain, so do not update the fields
+				return nil
+			}
+		}
+
+		// The block has already been inserted into the database, so just update the fields
+		_, err = s.DB.NamedExec(`UPDATE blindedbeaconblock SET
+			signed_blinded_beacon_block = :signed_blinded_beacon_block,
+			signature = :signature,
+			inserted_at = :inserted_at
+			WHERE bid_id = :bid_id`, signedBlindedBeaconBlock)
+		if err != nil {
+			return err
+		}
+
+	}
 
 	// Add the signed blinded beacon block to the database with block bid id
 	tx := s.DB.MustBegin()

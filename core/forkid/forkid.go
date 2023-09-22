@@ -24,13 +24,13 @@ import (
 	"math"
 	"math/big"
 	"reflect"
-	"sort"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
+	"golang.org/x/exp/slices"
 )
 
 var (
@@ -73,9 +73,9 @@ type ID struct {
 type Filter func(id ID) error
 
 // NewID calculates the Ethereum fork ID from the chain config, genesis hash, head and time.
-func NewID(config *params.ChainConfig, genesis common.Hash, head, time uint64) ID {
+func NewID(config *params.ChainConfig, genesis *types.Block, head, time uint64) ID {
 	// Calculate the starting checksum from the genesis hash
-	hash := crc32.ChecksumIEEE(genesis[:])
+	hash := crc32.ChecksumIEEE(genesis.Hash().Bytes())
 
 	// Calculate the current fork checksum and the next fork block
 	forksByBlock, forksByTime := gatherForks(config)
@@ -88,6 +88,10 @@ func NewID(config *params.ChainConfig, genesis common.Hash, head, time uint64) I
 		return ID{Hash: checksumToBytes(hash), Next: fork}
 	}
 	for _, fork := range forksByTime {
+		if fork <= genesis.Time() {
+			// Fork active in genesis, skip in forkid calculation
+			continue
+		}
 		if fork <= time {
 			// Fork already passed, checksum the previous hash and fork timestamp
 			hash = checksumUpdate(hash, fork)
@@ -104,7 +108,7 @@ func NewIDWithChain(chain Blockchain) ID {
 
 	return NewID(
 		chain.Config(),
-		chain.Genesis().Hash(),
+		chain.Genesis(),
 		head.Number.Uint64(),
 		head.Time,
 	)
@@ -270,8 +274,8 @@ func gatherForks(config *params.ChainConfig) ([]uint64, []uint64) {
 			}
 		}
 	}
-	sort.Slice(forksByBlock, func(i, j int) bool { return forksByBlock[i] < forksByBlock[j] })
-	sort.Slice(forksByTime, func(i, j int) bool { return forksByTime[i] < forksByTime[j] })
+	slices.Sort(forksByBlock)
+	slices.Sort(forksByTime)
 
 	// Deduplicate fork identifiers applying multiple forks
 	for i := 1; i < len(forksByBlock); i++ {

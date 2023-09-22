@@ -8,8 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	capellaApi "github.com/attestantio/go-eth2-client/api/v1/capella"
-
+	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 
@@ -61,20 +60,13 @@ func (b *Builder) handleBlockBountyBid(w http.ResponseWriter, req *http.Request)
 
 func (b *Builder) handleBlindedBlockSubmission(w http.ResponseWriter, req *http.Request) {
 
-	payload := new(capellaApi.SignedBlindedBeaconBlock)
+	payload := new(commonTypes.VersionedSignedBlindedBeaconBlock)
 	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("invalid payload: %v", err))
 		return
 	}
-
-	if payload.Message == nil {
-		respondError(w, http.StatusBadRequest, "invalid payload, message is nil")
-		return
-	}
-
-	log.Info("Blinded block submission request", "slot", payload.Message.Slot, "payloadSignature", payload.Signature)
-
-	executionPayload, err := b.SubmitBlindedBlock(*payload.Message, payload.Signature)
+	
+	executionPayload, err := b.SubmitBlindedBlock(*payload)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return

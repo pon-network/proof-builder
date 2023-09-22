@@ -5,7 +5,6 @@ import (
 	"time"
 
 	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/eth"
@@ -21,11 +20,11 @@ func NewEthService(eth *eth.Ethereum) *EthService {
 	return &EthService{eth: eth}
 }
 
-func (s *EthService) BuildBlock(attrs *builderTypes.BuilderPayloadAttributes, sealedBlockCallback miner.SealedBlockCallbackFn) error {
+func (s *EthService) BuildBlock(attrs *builderTypes.BuilderPayloadAttributes, bountyBlock bool, sealedBlockCallback miner.SealedBlockCallbackFn) error {
 	// Send a request to generate a full block in the background.
 	// The result can be obtained via the returned channel.
 
-	resCh, err := s.eth.Miner().BuildBlockWithCallback(attrs.HeadHash, uint64(attrs.Timestamp), common.HexToAddress(attrs.SuggestedFeeRecipient.String()), attrs.Random, attrs.NoMempoolTxs, attrs.Transactions, attrs.Bundles, attrs.Withdrawals, attrs.PayoutPoolAddress, attrs.BidAmount, attrs.GasLimit, sealedBlockCallback)
+	resCh, err := s.eth.Miner().BuildBlockWithCallback(attrs, bountyBlock, sealedBlockCallback)
 	if err != nil {
 		return err
 	}
@@ -56,7 +55,7 @@ func (s *EthService) GetBlockChain() *core.BlockChain {
 	return s.eth.BlockChain()
 }
 
-func (s* EthService) Backend() *eth.Ethereum {
+func (s *EthService) Backend() *eth.Ethereum {
 	return s.eth
 }
 

@@ -10,19 +10,17 @@ import (
 	_ "os"
 	"time"
 
-	capellaApi "github.com/attestantio/go-eth2-client/api/v1/capella"
 	"github.com/attestantio/go-eth2-client/spec/bellatrix"
 	capella "github.com/attestantio/go-eth2-client/spec/capella"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
+	"github.com/holiman/uint256"
 
 	"github.com/ethereum/go-ethereum/beacon/engine"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 
 	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
-	bundleTypes "github.com/bsn-eng/pon-golang-types/bundles"
 	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 	bbTypes "github.com/ethereum/go-ethereum/builder/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -50,7 +48,11 @@ submitter:
 		select {
 		case blockProps := <-channel:
 
-			var attrs builderTypes.BuilderPayloadAttributes
+			if blockProps.block == nil || blockProps.blockExecutionPayloadEnvlope == nil || blockProps.blockExecutionPayloadEnvlope.ExecutionPayload == nil {
+				log.Error("Received nil block or block execution payload envelope")
+				continue submitter
+			}
+
 			if !blockProps.bountyBid {
 				// Check slot submissions if there are already 2 submissions for this slot
 				b.slotSubmissionsLock.Lock()
@@ -60,19 +62,7 @@ submitter:
 				}
 				b.slotSubmissionsLock.Unlock()
 
-				b.slotMu.Lock()
-				allAttrs, ok := b.slotAttrs[slot]
-				// If we have not received any block attributes for this slot,
-				// then we should not submit a block for this slot
-				if !ok || len(allAttrs) == 0 {
-					b.slotMu.Unlock()
-					continue submitter
-				}
-				// Get most recent block bid attributes for this slot
-				attrs = allAttrs[len(allAttrs)-1]
-				b.slotMu.Unlock()
-
-				log.Info("Received block properties", "slot", slot, "blockHash", blockProps.blockExecutableData.BlockHash)
+				log.Info("Received block properties", "slot", slot, "blockHash", blockProps.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash)
 			} else {
 				// Block is a bounty block
 
@@ -84,22 +74,10 @@ submitter:
 				}
 				b.slotSubmissionsLock.Unlock()
 
-				b.slotBountyMu.Lock()
-				allAttrs, ok := b.slotBountyAttrs[slot]
-				// If we have not received any bounty block attributes for this slot,
-				// then we should not submit a bounty block for this slot
-				if !ok || len(allAttrs) == 0 {
-					b.slotBountyMu.Unlock()
-					continue submitter
-				}
-				// Get most recent bounty block bid attributes for this slot
-				attrs = allAttrs[len(allAttrs)-1]
-				b.slotBountyMu.Unlock()
-
-				log.Info("Received bounty block properties", "slot", slot, "blockHash", blockProps.blockExecutableData.BlockHash)
+				log.Info("Received bounty block properties", "slot", slot, "blockHash", blockProps.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash)
 			}
 
-			log.Info("Attempting to submit block", "slot", slot, "blockHash", blockProps.blockExecutableData.BlockHash, "timeUntilDeadline", time.Until(deadline))
+			log.Info("Attempting to submit block", "slot", slot, "blockHash", blockProps.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash, "timeUntilDeadline", time.Until(deadline))
 
 			// Attempt to submit block
 			b.slotSubmissionsLock.Lock()
@@ -110,7 +88,7 @@ submitter:
 				// and the latest bid amount is the same as what was submitted
 				// then we can ignore this block
 				for _, bid := range b.slotSubmissions[slot] {
-					if bid.BlockBid.Message.Value == attrs.BidAmount {
+					if bid.BlockBid.Message.Value == blockProps.attrs.BidAmount {
 						b.slotSubmissionsLock.Unlock()
 						log.Debug("Already submitted a block for this slot with the same bid value", "slot", slot)
 						continue submitter
@@ -119,12 +97,12 @@ submitter:
 
 				if !time.Now().After(deadline.Add(-time.Second).Add(-b.submissionEndWindow)) && !blockProps.bountyBid {
 					b.slotSubmissionsLock.Unlock()
-					log.Debug("Submitted just 1 block for this slot, but not in final submission window. Waiting for final submission window to submit this block", "slot", slot, "blockHash", blockProps.blockExecutableData.BlockHash)
+					log.Debug("Submitted just 1 block for this slot, but not in final submission window. Waiting for final submission window to submit this block", "slot", slot, "blockHash", blockProps.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash)
 					pendingBlock = blockProps
 					continue submitter
 				} else if !time.Now().After(deadline.Add(-time.Second)) && blockProps.bountyBid {
 					b.slotSubmissionsLock.Unlock()
-					log.Debug("Not in bounty submission window. Waiting for bounty submission window to submit this bounty block", "slot", slot, "blockHash", blockProps.blockExecutableData.BlockHash)
+					log.Debug("Not in bounty submission window. Waiting for bounty submission window to submit this bounty block", "slot", slot, "blockHash", blockProps.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash)
 					pendingBountyBlock = blockProps
 					continue submitter
 				}
@@ -132,12 +110,12 @@ submitter:
 			b.slotSubmissionsLock.Unlock()
 
 			// Else if no successful submission has been made for this slot, or within a submission window, submit this block immediately
-			log.Info("submitBestBlock", "slot", slot, "blockHash", blockProps.blockExecutableData.BlockHash, "bountyBid", blockProps.bountyBid)
+			log.Info("submitBestBlock", "slot", slot, "blockHash", blockProps.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash, "bountyBid", blockProps.bountyBid)
 
 			timeTillDeadline := time.Until(deadline)
 			log.Info("block builder submission time till deadline", "timeTillDeadline", timeTillDeadline)
 
-			finalizedBid, err := b.submitBlockBid(blockProps.block, blockProps.blockValue, blockProps.payoutPoolTx, blockProps.triedBundles, blockProps.bountyBid, proposerPubkey, &attrs)
+			finalizedBid, err := b.submitBlockBid(blockProps, proposerPubkey)
 
 			b.slotSubmissionsLock.Lock()
 			if err != nil {
@@ -146,7 +124,7 @@ submitter:
 				b.slotSubmissionsLock.Unlock()
 				continue submitter
 			} else {
-				log.Info("Submitted block", "slot", slot, "blockHash", blockProps.blockExecutableData.BlockHash)
+				log.Info("Submitted block", "slot", slot, "blockHash", blockProps.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash)
 				finalizedBid.BidRequestTime = startTime
 				finalizedBid.BlockBuiltTime = blockProps.builtTime
 				b.slotSubmissions[slot] = append(b.slotSubmissions[slot], finalizedBid)
@@ -163,29 +141,17 @@ submitter:
 		case <-biddingTimer.C:
 			// Timer triggered, submit pending block if any
 
-			b.slotMu.Lock()
-			allAttrs, ok := b.slotAttrs[slot]
-			// If we have not received any block attributes for this slot,
-			// then we should not submit a block for this slot
-			if !ok || len(allAttrs) == 0 {
-				b.slotMu.Unlock()
-				continue submitter
-			}
-			// Get most recent block bid attributes for this slot
-			attrs := allAttrs[len(allAttrs)-1]
-			b.slotMu.Unlock()
-
 			// Check slot submissions if there are already 2 submissions for this slot
 			b.slotSubmissionsLock.Lock()
 			if len(b.slotBidAmounts[slot]) == 2 {
 				b.slotSubmissionsLock.Unlock()
 				continue submitter
-			} else if len(b.slotBidAmounts[slot]) == 1 {
+			} else if len(b.slotBidAmounts[slot]) == 1 && pendingBlock.block != nil {
 				// If there is already a submission for this slot
 				// and the latest bid amount is the same as what was submitted
 				// then we can ignore this block
 				for _, bid := range b.slotSubmissions[slot] {
-					if bid.BlockBid.Message.Value == attrs.BidAmount {
+					if bid.BlockBid.Message.Value == pendingBlock.attrs.BidAmount {
 						b.slotSubmissionsLock.Unlock()
 						log.Debug("Already submitted a block for this slot with the same bid value", "slot", slot)
 						continue submitter
@@ -196,7 +162,7 @@ submitter:
 
 			// Check if there is a pending block
 			if pendingBlock.block != nil {
-				finalizedBid, err := b.submitBlockBid(pendingBlock.block, pendingBlock.blockValue, pendingBlock.payoutPoolTx, pendingBlock.triedBundles, pendingBlock.bountyBid, proposerPubkey, &attrs)
+				finalizedBid, err := b.submitBlockBid(pendingBlock, proposerPubkey)
 				b.slotSubmissionsLock.Lock()
 				if err != nil {
 					log.Error("could not submit block", "err", err)
@@ -204,7 +170,7 @@ submitter:
 					b.slotSubmissionsLock.Unlock()
 					continue submitter
 				} else {
-					log.Info("Submitted block", "slot", slot, "blockHash", pendingBlock.blockExecutableData.BlockHash)
+					log.Info("Submitted block", "slot", slot, "blockHash", pendingBlock.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash)
 					finalizedBid.BidRequestTime = startTime
 					finalizedBid.BlockBuiltTime = pendingBlock.builtTime
 					b.slotSubmissions[slot] = append(b.slotSubmissions[slot], finalizedBid)
@@ -218,18 +184,6 @@ submitter:
 		case <-bountyTimer.C:
 			// Timer triggered, submit pending bounty block if any
 
-			b.slotBountyMu.Lock()
-			slotBountyAttrs, ok := b.slotBountyAttrs[slot]
-			// If we have not received any bounty block attributes for this slot,
-			// then we should not submit a bounty block for this slot
-			if !ok || len(slotBountyAttrs) == 0 {
-				b.slotBountyMu.Unlock()
-				continue submitter
-			}
-			// Get most recent bounty block bid attributes for this slot
-			attrs := slotBountyAttrs[len(slotBountyAttrs)-1]
-			b.slotBountyMu.Unlock()
-
 			// Check slot submissions if there has already been a successful bounty
 			// submission for this slot
 			b.slotSubmissionsLock.Lock()
@@ -241,7 +195,7 @@ submitter:
 
 			// Check if there is a pending bounty block
 			if pendingBountyBlock.block != nil {
-				finalizedBid, err := b.submitBlockBid(pendingBountyBlock.block, pendingBountyBlock.blockValue, pendingBountyBlock.payoutPoolTx, pendingBountyBlock.triedBundles, pendingBountyBlock.bountyBid, proposerPubkey, &attrs)
+				finalizedBid, err := b.submitBlockBid(pendingBountyBlock, proposerPubkey)
 				b.slotSubmissionsLock.Lock()
 				if err != nil {
 					log.Error("could not submit block", "err", err)
@@ -249,7 +203,7 @@ submitter:
 					b.slotSubmissionsLock.Unlock()
 					continue submitter
 				} else {
-					log.Info("Submitted block", "slot", slot, "blockHash", pendingBlock.blockExecutableData.BlockHash)
+					log.Info("Submitted block", "slot", slot, "blockHash", pendingBlock.blockExecutionPayloadEnvlope.ExecutionPayload.BlockHash)
 					finalizedBid.BidRequestTime = startTime
 					finalizedBid.BlockBuiltTime = pendingBlock.builtTime
 					b.slotSubmissions[slot] = append(b.slotSubmissions[slot], finalizedBid)
@@ -295,9 +249,16 @@ submitter:
 
 }
 
-func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutPoolTx []byte, triedBundles []bundleTypes.BuilderBundle, bountyBid bool, proposerPubkey commonTypes.PublicKey, attrs *builderTypes.BuilderPayloadAttributes) (builderTypes.BlockBidResponse, error) {
-	executionPayloadEnvlope := engine.BlockToExecutableData(block, blockFees)
+func (b *Builder) submitBlockBid(
+	blockProperties blockProperties,
+	proposerPubkey commonTypes.PublicKey,
+) (builderTypes.BlockBidResponse, error) {
+	executionPayloadEnvlope := blockProperties.blockExecutionPayloadEnvlope
 	executableData := executionPayloadEnvlope.ExecutionPayload
+	block := blockProperties.block
+	payoutPoolTx := blockProperties.payoutPoolTx
+	blockFees := executionPayloadEnvlope.BlockValue
+	attrs := blockProperties.attrs
 
 	// Verify the last tx is the payout pool tx by checking the bytes are the same
 	last_tx := executableData.Transactions[len(executableData.Transactions)-1]
@@ -319,7 +280,7 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 			Slot:                 attrs.Slot,
 			Amount:               attrs.BidAmount,
 			BuilderWalletAddress: b.builderWalletAddress.String(),
-			PayoutTxBytes:        hexutil.Encode(payoutPoolTx),
+			PayoutTxBytes:        hexutil.Encode(blockProperties.payoutPoolTx),
 			TxBytes:              transactions_encodedList,
 		},
 	)
@@ -359,8 +320,11 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 	logsBloom := [256]byte{}
 	copy(logsBloom[:], executionPayloadHeader.Bloom.Bytes()[:])
 
-	baseFeePerGas := [32]byte{}
-	copy(baseFeePerGas[:], executionPayloadHeader.BaseFee.Bytes()[:])
+	baseFeePerGas := uint256.NewInt(0)
+	i, overflow := uint256.FromBig(executionPayloadHeader.BaseFee)
+	if !overflow {
+		baseFeePerGas = i
+	}
 
 	prevRandao := [32]byte{}
 	copy(prevRandao[:], executionPayloadHeader.MixDigest.Bytes()[:])
@@ -374,26 +338,37 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 	extraData := [32]byte{}
 	copy(extraData[:], executionPayloadHeader.Extra[:])
 
+	// Can safely default to 0 if not in right fork version
+	// as wont affect blockhash copied from execution payload header
+	blobGasUsed := uint64(0)
+	if executionPayloadHeader.BlobGasUsed != nil {
+		blobGasUsed = *executionPayloadHeader.BlobGasUsed
+	}
+
+	excessBlobGasUsed := uint64(0)
+	if executionPayloadHeader.ExcessBlobGas != nil {
+		excessBlobGasUsed = *executionPayloadHeader.ExcessBlobGas
+	}
+
 	var bellatrixTransactions []bellatrix.Transaction = make([]bellatrix.Transaction, 0)
 	for _, tx := range executableData.Transactions {
 		var bellatrixTx bellatrix.Transaction = make([]byte, len(tx))
 		copy(bellatrixTx[:], tx[:])
 		bellatrixTransactions = append(bellatrixTransactions, bellatrixTx)
 	}
-	transactionsRoot, _ := ComputeTransactionsRoot(bellatrixTransactions)
 
-	var capellaWithdrawals []*capella.Withdrawal = make([]*capella.Withdrawal, 0)
+	var denebWithdrawals []*capella.Withdrawal = make([]*capella.Withdrawal, 0)
 	for _, withdrawal := range executableData.Withdrawals {
-		capellaWithdrawals = append(capellaWithdrawals, &capella.Withdrawal{
+		denebWithdrawals = append(denebWithdrawals, &capella.Withdrawal{
 			Index:          capella.WithdrawalIndex(withdrawal.Index),
 			ValidatorIndex: phase0.ValidatorIndex(withdrawal.Validator),
 			Address:        bellatrix.ExecutionAddress(withdrawal.Address),
 			Amount:         phase0.Gwei(withdrawal.Amount),
 		})
 	}
-	withdrawalsRoot, _ := ComputeWithdrawalsRoot(capellaWithdrawals)
 
-	capellaExecutionPayloadHeader := capella.ExecutionPayloadHeader{
+	// Assign all the fields to the base execution payload
+	baseExecutionPayload := commonTypes.BaseExecutionPayload{
 		ParentHash:       parentHash,
 		FeeRecipient:     feeRecipient,
 		StateRoot:        stateRoot,
@@ -407,8 +382,32 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 		ExtraData:        extraData[:],
 		BaseFeePerGas:    baseFeePerGas,
 		BlockHash:        blockHash,
-		TransactionsRoot: transactionsRoot,
-		WithdrawalsRoot:  withdrawalsRoot,
+		Transactions: bellatrixTransactions,
+		Withdrawals: denebWithdrawals,
+		BlobGasUsed: 	blobGasUsed,
+		ExcessBlobGas: 	excessBlobGasUsed,
+	}
+
+	b.beacon.BeaconData.Mu.Lock()
+	currentForkVersion := b.beacon.BeaconData.CurrentForkVersion
+	b.beacon.BeaconData.Mu.Unlock()
+
+	// Convert the base execution payload into a versioned execution payload
+	versionedExecutionPayload, err := commonTypes.ConstructExecutionPayload(
+		currentForkVersion,
+		baseExecutionPayload,
+	)
+	if err != nil {
+		log.Error("could not convert base execution payload to versioned execution payload", "err", err)
+		return builderTypes.BlockBidResponse{}, err
+	}
+
+	// Convert the versioned execution payload into a versioned execution payload header
+	// This hashes the the transactions and withdrawals in the execution payload
+	versionedExecutionPayloadHeader, err := versionedExecutionPayload.ToVersionedExecutionPayloadHeader()
+	if err != nil {
+		log.Error("could not convert execution payload to versioned execution payload header", "err", err)
+		return builderTypes.BlockBidResponse{}, err
 	}
 
 	blockBidMsg := builderTypes.BidPayload{
@@ -424,7 +423,7 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 
 		BuilderWalletAddress:   commonTypes.Address(b.builderWalletAddress),
 		PayoutPoolTransaction:  payoutPoolTx,
-		ExecutionPayloadHeader: &capellaExecutionPayloadHeader,
+		ExecutionPayloadHeader: &versionedExecutionPayloadHeader,
 		Endpoint:               b.AccessPoint + _PathSubmitBlindedBlock,
 		RPBS:                   rpbsSig,
 		RPBSPubkey:             rpbsPubkey,
@@ -460,7 +459,7 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 	var submissionErr error
 
 	for i := 0; i < RetryCount; i++ {
-		submissionResp, submissionErr = b.relay.SubmitBlockBid(&blockSubmitReq, bountyBid)
+		submissionResp, submissionErr = b.relay.SubmitBlockBid(&blockSubmitReq, blockProperties.bountyBid)
 		if submissionErr == nil {
 			break
 		}
@@ -484,12 +483,12 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 	if b.BundlesEnabled {
 
 		// Not all bundles in attrs.Bundles will be added to the block bid sent, rather the tried bundles
-		go b.bundles.ProcessSentBundles(triedBundles, blockSubmitReq.Message.BlockHash.String(), blockSubmitReq.Message.Slot)
+		go b.bundles.ProcessSentBundles(blockProperties.triedBundles, blockSubmitReq.Message.BlockHash.String(), blockSubmitReq.Message.Slot)
 
 		// Set all bundles in attrs.Bundles to adding=false in case any bundles were ignored
 		go b.bundles.SetBundlesAddingFalse(attrs.Bundles)
 
-		attrs.Bundles = triedBundles
+		attrs.Bundles = blockProperties.triedBundles
 	}
 
 	submissionResp_string, err := json.Marshal(submissionResp)
@@ -540,12 +539,39 @@ func (b *Builder) submitBlockBid(block *types.Block, blockFees *big.Int, payoutP
 	return blockBidSubmitted, nil
 }
 
-func (b *Builder) SubmitBlindedBlock(blindedBlock capellaApi.BlindedBeaconBlock, signature phase0.BLSSignature) (capella.ExecutionPayload, error) {
+func (b *Builder) SubmitBlindedBlock(signedblindedBlock commonTypes.VersionedSignedBlindedBeaconBlock) (commonTypes.VersionedExecutionPayload, error) {
 
-	var executionPayload capella.ExecutionPayload
-	var beaconBlock capella.SignedBeaconBlock
+	b.beacon.BeaconData.Mu.Lock()
+	currentForkVersion := b.beacon.BeaconData.CurrentForkVersion
+	b.beacon.BeaconData.Mu.Unlock()
+
+	// Check forkVersion of the signed blinded beacon block is the same as the current fork version
+	// If not, the builder will not be able to publish the block to the beacon chain or know which version
+	// of the execution payload to use
+	signedBlindedBlock_version, err := signedblindedBlock.Version()
+	if err != nil {
+		log.Error("could not get version of signed blinded beacon block", "err", err)
+		return commonTypes.VersionedExecutionPayload{}, err
+	}
+
+	if signedBlindedBlock_version != currentForkVersion {
+		log.Error("signed blinded beacon block version does not match current fork version", "signedBlindedBlock_version", signedBlindedBlock_version, "currentForkVersion", currentForkVersion)
+		return commonTypes.VersionedExecutionPayload{}, errors.New("signed blinded beacon block version does not match current fork version")
+	}
+
+	// Unpack the versioned signed blinded beacon block from its available version into a base signed blinded beacon block for access
+	baseSignedBlindedBeaconBlock, err := signedblindedBlock.ToBaseSignedBlindedBeaconBlock()
+	if err != nil {
+		log.Error("could not convert signed blinded beacon block to base signed blinded beacon block", "err", err)
+		return commonTypes.VersionedExecutionPayload{}, err
+	}
+
+	blindedBlock := baseSignedBlindedBeaconBlock.Message
+	signature := baseSignedBlindedBeaconBlock.Signature
 
 	slot := uint64(blindedBlock.Slot)
+
+	log.Info("Blinded block submission request", "slot", blindedBlock.Slot, "payloadSignature", signature.String())
 
 	var executableData engine.ExecutableData
 
@@ -557,23 +583,24 @@ func (b *Builder) SubmitBlindedBlock(blindedBlock capellaApi.BlindedBeaconBlock,
 	b.slotMu.Unlock()
 
 	if !exists {
-		return capella.ExecutionPayload{}, errors.New("execution payload not found")
+		return commonTypes.VersionedExecutionPayload{}, errors.New("execution payload not found")
 	}
 
 	log.Info("executionPayload found", "slot", slot, "hash", executableData.BlockHash.String())
 
-	// If execution payload is found and block building for second submission is still in progress, cancel it
-	if b.slotCtxCancel != nil {
-		b.slotCtxCancel()
-	}
-
 	if b.MetricsEnabled {
+		// The signed blinded beacon block has been received and is being processed
 		blindedBeaconBlockEntry := database.SignedBlindedBeaconBlockEntry{
 			InsertedAt:               time.Now(),
 			Signature:                signature.String(),
-			SignedBlindedBeaconBlock: blindedBlock.String(),
+			SignedBlindedBeaconBlock: signedblindedBlock.String(),
 		}
 		go b.db.InsertBlindedBeaconBlock(blindedBeaconBlockEntry, blindedBlock.Body.ExecutionPayloadHeader.BlockHash.String())
+	}
+
+	// If execution payload is found and block building for second submission is still in progress, cancel it
+	if b.slotCtxCancel != nil {
+		b.slotCtxCancel()
 	}
 
 	var withdrawals []*capella.Withdrawal = make([]*capella.Withdrawal, 0)
@@ -593,60 +620,51 @@ func (b *Builder) SubmitBlindedBlock(blindedBlock capellaApi.BlindedBeaconBlock,
 		transactions = append(transactions, bellatrixTx)
 	}
 
-	executionPayload = capella.ExecutionPayload{
-		ParentHash:    blindedBlock.Body.ExecutionPayloadHeader.ParentHash,
-		FeeRecipient:  blindedBlock.Body.ExecutionPayloadHeader.FeeRecipient,
-		StateRoot:     blindedBlock.Body.ExecutionPayloadHeader.StateRoot,
-		ReceiptsRoot:  blindedBlock.Body.ExecutionPayloadHeader.ReceiptsRoot,
-		LogsBloom:     blindedBlock.Body.ExecutionPayloadHeader.LogsBloom,
-		PrevRandao:    blindedBlock.Body.ExecutionPayloadHeader.PrevRandao,
-		BlockNumber:   blindedBlock.Body.ExecutionPayloadHeader.BlockNumber,
-		GasLimit:      blindedBlock.Body.ExecutionPayloadHeader.GasLimit,
-		GasUsed:       blindedBlock.Body.ExecutionPayloadHeader.GasUsed,
-		Timestamp:     blindedBlock.Body.ExecutionPayloadHeader.Timestamp,
-		ExtraData:     blindedBlock.Body.ExecutionPayloadHeader.ExtraData,
-		BaseFeePerGas: blindedBlock.Body.ExecutionPayloadHeader.BaseFeePerGas,
-		BlockHash:     blindedBlock.Body.ExecutionPayloadHeader.BlockHash,
-		Withdrawals:   withdrawals,
-		Transactions:  transactions,
+	// Convert the versioned signed blinded beacon block into a versioned signed beacon block
+	// This would have the transactions and withdrawals feilds as nil as those cannot be derived from the blinded block
+	versionedSignedBeaconBlock, err := signedblindedBlock.ToVersionedSignedBeaconBlock()
+	if err != nil {
+		log.Error("could not convert signed blinded beacon block to versioned signed beacon block", "err", err)
+		return commonTypes.VersionedExecutionPayload{}, err
 	}
 
-	log.Info("executionPayload", "payload", executionPayload.String())
-
-	beaconBlock = capella.SignedBeaconBlock{
-		Message: &capella.BeaconBlock{
-			Slot:          blindedBlock.Slot,
-			ProposerIndex: blindedBlock.ProposerIndex,
-			ParentRoot:    blindedBlock.ParentRoot,
-			StateRoot:     blindedBlock.StateRoot,
-			Body: &capella.BeaconBlockBody{
-				RANDAOReveal:          blindedBlock.Body.RANDAOReveal,
-				ETH1Data:              blindedBlock.Body.ETH1Data,
-				Graffiti:              blindedBlock.Body.Graffiti,
-				ProposerSlashings:     blindedBlock.Body.ProposerSlashings,
-				AttesterSlashings:     blindedBlock.Body.AttesterSlashings,
-				Attestations:          blindedBlock.Body.Attestations,
-				Deposits:              blindedBlock.Body.Deposits,
-				VoluntaryExits:        blindedBlock.Body.VoluntaryExits,
-				SyncAggregate:         blindedBlock.Body.SyncAggregate,
-				BLSToExecutionChanges: blindedBlock.Body.BLSToExecutionChanges,
-				ExecutionPayload:      &executionPayload,
-			},
-		},
-		Signature: signature,
+	// Unpack the obtained versioned signed beacon block into a base signed beacon block for access
+	baseSignedBeaconBlock, err := versionedSignedBeaconBlock.ToBaseSignedBeaconBlock()
+	if err != nil {
+		log.Error("could not convert versioned signed beacon block to base signed beacon block", "err", err)
+		return commonTypes.VersionedExecutionPayload{}, err
 	}
 
-	if b.BundlesEnabled {
-		// If bundles are enabled, we need to update the bundles to reflect the bundles that were included in the block
-		// This is because the block builder will not know which bundles were included in the block
-		// and will not be able to update the bundles itself
+	// Update the transactions and withdrawals fields of the base signed beacon block
+	baseSignedBeaconBlock.Message.Body.ExecutionPayload.Transactions = transactions
+	baseSignedBeaconBlock.Message.Body.ExecutionPayload.Withdrawals = withdrawals
 
-		go b.bundles.ProcessBlockAdded(blindedBlock.Body.ExecutionPayloadHeader.BlockHash.String())
+	// Reconstruct the versioned signed beacon block from the updated base signed beacon block
+	versionedSignedBeaconBlock, err = commonTypes.ConstructSignedBeaconBlock(
+		currentForkVersion,
+		baseSignedBeaconBlock,
+	)
+	if err != nil {
+		log.Error("could not convert base signed beacon block to versioned signed beacon block", "err", err)
+		return commonTypes.VersionedExecutionPayload{}, err
 	}
 
-	go b.beacon.PublishBlock(context.Background(), beaconBlock, b.MetricsEnabled, b.db)
-	log.Info("Publishing block", "slot", slot, "block_hash", beaconBlock.Message.Body.ExecutionPayload.BlockHash.String())
+	// Create a versioned execution payload from the execution payload in the block
+	versionedExecutionPayload, err := commonTypes.ConstructExecutionPayload(
+		currentForkVersion,
+		*baseSignedBeaconBlock.Message.Body.ExecutionPayload,
+	)
+	if err != nil {
+		log.Error("could not convert base execution payload to versioned execution payload", "err", err)
+		return commonTypes.VersionedExecutionPayload{}, err
+	}
 
-	return executionPayload, nil
+	go b.beacon.PublishBlock(context.Background(), versionedSignedBeaconBlock, b.MetricsEnabled, b.db, b.BundlesEnabled, b.bundles.ProcessBlockAdded)
+	log.Info("Publishing block", "slot", slot, "block_hash", baseSignedBeaconBlock.Message.Body.ExecutionPayload.BlockHash.String())
+
+	// Publishing function, internally would update the builder metrics with the signed beacon block being published (if metrics enabled)
+	// Publishing function, internally would update the bundle service on any successfully added bundles (if bundles enabled)
+
+	return versionedExecutionPayload, nil
 
 }

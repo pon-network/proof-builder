@@ -61,6 +61,8 @@ type ExecutableData struct {
 	BlockHash     common.Hash         `json:"blockHash"     gencodec:"required"`
 	Transactions  [][]byte            `json:"transactions"  gencodec:"required"`
 	Withdrawals   []*types.Withdrawal `json:"withdrawals"`
+	BlobGasUsed   *uint64             `json:"blobGasUsed"`
+	ExcessBlobGas *uint64             `json:"excessBlobGas"`
 }
 
 // JSON type overrides for executableData.
@@ -73,6 +75,8 @@ type executableDataMarshaling struct {
 	ExtraData     hexutil.Bytes
 	LogsBloom     hexutil.Bytes
 	Transactions  []hexutil.Bytes
+	BlobGasUsed   *hexutil.Uint64
+	ExcessBlobGas *hexutil.Uint64
 }
 
 //go:generate go run github.com/fjl/gencodec -type ExecutionPayloadEnvelope -field-override executionPayloadEnvelopeMarshaling -out gen_epe.go
@@ -80,6 +84,13 @@ type executableDataMarshaling struct {
 type ExecutionPayloadEnvelope struct {
 	ExecutionPayload *ExecutableData `json:"executionPayload"  gencodec:"required"`
 	BlockValue       *big.Int        `json:"blockValue"  gencodec:"required"`
+	BlobsBundle      *BlobsBundleV1  `json:"blobsBundle"`
+}
+
+type BlobsBundleV1 struct {
+	Commitments []hexutil.Bytes `json:"commitments"`
+	Proofs      []hexutil.Bytes `json:"proofs"`
+	Blobs       []hexutil.Bytes `json:"blobs"`
 }
 
 // JSON type overrides for ExecutionPayloadEnvelope.
@@ -152,14 +163,15 @@ func DecodeTransactions(enc [][]byte) ([]*types.Transaction, error) {
 // ExecutableDataToBlock constructs a block from executable data.
 // It verifies that the following fields:
 //
-//	len(extraData) <= 32
-//	uncleHash = emptyUncleHash
-//	difficulty = 0
+//		len(extraData) <= 32
+//		uncleHash = emptyUncleHash
+//		difficulty = 0
+//	 	if versionedHashes != nil, versionedHashes match to blob transactions
 //
 // and that the blockhash of the constructed block matches the parameters. Nil
 // Withdrawals value will propagate through the returned block. Empty
 // Withdrawals value must be passed via non-nil, length 0 value in params.
-func ExecutableDataToBlock(params ExecutableData) (*types.Block, error) {
+func ExecutableDataToBlock(params ExecutableData, versionedHashes []common.Hash) (*types.Block, error) {
 	txs, err := DecodeTransactions(params.Transactions)
 	if err != nil {
 		return nil, err
@@ -173,6 +185,18 @@ func ExecutableDataToBlock(params ExecutableData) (*types.Block, error) {
 	// Check that baseFeePerGas is not negative or too big
 	if params.BaseFeePerGas != nil && (params.BaseFeePerGas.Sign() == -1 || params.BaseFeePerGas.BitLen() > 256) {
 		return nil, fmt.Errorf("invalid baseFeePerGas: %v", params.BaseFeePerGas)
+	}
+	var blobHashes []common.Hash
+	for _, tx := range txs {
+		blobHashes = append(blobHashes, tx.BlobHashes()...)
+	}
+	if len(blobHashes) != len(versionedHashes) {
+		return nil, fmt.Errorf("invalid number of versionedHashes: %v blobHashes: %v", versionedHashes, blobHashes)
+	}
+	for i := 0; i < len(blobHashes); i++ {
+		if blobHashes[i] != versionedHashes[i] {
+			return nil, fmt.Errorf("invalid versionedHash at %v: %v blobHashes: %v", i, versionedHashes, blobHashes)
+		}
 	}
 	// Only set withdrawalsRoot if it is non-nil. This allows CLs to use
 	// ExecutableData before withdrawals are enabled by marshaling
@@ -199,66 +223,20 @@ func ExecutableDataToBlock(params ExecutableData) (*types.Block, error) {
 		Extra:           params.ExtraData,
 		MixDigest:       params.Random,
 		WithdrawalsHash: withdrawalsRoot,
+		ExcessBlobGas:   params.ExcessBlobGas,
+		BlobGasUsed:     params.BlobGasUsed,
+		// TODO BeaconRoot
 	}
 	block := types.NewBlockWithHeader(header).WithBody(txs, nil /* uncles */).WithWithdrawals(params.Withdrawals)
 	if block.Hash() != params.BlockHash {
 		return nil, fmt.Errorf("blockhash mismatch, want %x, got %x", params.BlockHash, block.Hash())
 	}
-	return block, nil
-}
-
-func ExecutableDataToBlockWithRoots(params ExecutableData, withdrawalsRoot *common.Hash) (*types.Block, error) {
-	txs, err := DecodeTransactions(params.Transactions)
-	if err != nil {
-		return nil, err
-	}
-	if len(params.ExtraData) > 32 {
-		return nil, fmt.Errorf("invalid extradata length: %v", len(params.ExtraData))
-	}
-	if len(params.LogsBloom) != 256 {
-		return nil, fmt.Errorf("invalid logsBloom length: %v", len(params.LogsBloom))
-	}
-	// Check that baseFeePerGas is not negative or too big
-	if params.BaseFeePerGas != nil && (params.BaseFeePerGas.Sign() == -1 || params.BaseFeePerGas.BitLen() > 256) {
-		return nil, fmt.Errorf("invalid baseFeePerGas: %v", params.BaseFeePerGas)
-	}
-	// Only set withdrawalsRoot if it is non-nil. This allows CLs to use
-	// ExecutableData before withdrawals are enabled by marshaling
-	// Withdrawals as the json null value.
-	if params.Withdrawals != nil && withdrawalsRoot == nil {
-		h := types.DeriveSha(types.Withdrawals(params.Withdrawals), trie.NewStackTrie(nil))
-		withdrawalsRoot = &h
-	}
-
-	header := &types.Header{
-		ParentHash:      params.ParentHash,
-		UncleHash:       types.EmptyUncleHash,
-		Coinbase:        params.FeeRecipient,
-		Root:            params.StateRoot,
-		TxHash:          types.DeriveSha(types.Transactions(txs), trie.NewStackTrie(nil)),
-		ReceiptHash:     params.ReceiptsRoot,
-		Bloom:           types.BytesToBloom(params.LogsBloom),
-		Difficulty:      common.Big0,
-		Number:          new(big.Int).SetUint64(params.Number),
-		GasLimit:        params.GasLimit,
-		GasUsed:         params.GasUsed,
-		Time:            params.Timestamp,
-		BaseFee:         params.BaseFeePerGas,
-		Extra:           params.ExtraData,
-		MixDigest:       params.Random,
-		WithdrawalsHash: withdrawalsRoot,
-	}
-	block := types.NewBlockWithHeader(header).WithBody(txs, nil /* uncles */).WithWithdrawals(params.Withdrawals)
-	if block.Hash() != params.BlockHash {
-		return nil, fmt.Errorf("blockhash mismatch, want %x, got %x", params.BlockHash, block.Hash())
-	}
-	block.Hash()
 	return block, nil
 }
 
 // BlockToExecutableData constructs the ExecutableData structure by filling the
 // fields from the given block. It assumes the given block is post-merge block.
-func BlockToExecutableData(block *types.Block, fees *big.Int) *ExecutionPayloadEnvelope {
+func BlockToExecutableData(block *types.Block, fees *big.Int, sidecars []*types.BlobTxSidecar) *ExecutionPayloadEnvelope {
 	data := &ExecutableData{
 		BlockHash:     block.Hash(),
 		ParentHash:    block.ParentHash(),
@@ -275,8 +253,23 @@ func BlockToExecutableData(block *types.Block, fees *big.Int) *ExecutionPayloadE
 		Random:        block.MixDigest(),
 		ExtraData:     block.Extra(),
 		Withdrawals:   block.Withdrawals(),
+		BlobGasUsed:   block.BlobGasUsed(),
+		ExcessBlobGas: block.ExcessBlobGas(),
+		// TODO BeaconRoot
 	}
-	return &ExecutionPayloadEnvelope{ExecutionPayload: data, BlockValue: fees}
+	bundle := BlobsBundleV1{
+		Commitments: make([]hexutil.Bytes, 0),
+		Blobs:       make([]hexutil.Bytes, 0),
+		Proofs:      make([]hexutil.Bytes, 0),
+	}
+	for _, sidecar := range sidecars {
+		for j := range sidecar.Blobs {
+			bundle.Blobs = append(bundle.Blobs, hexutil.Bytes(sidecar.Blobs[j][:]))
+			bundle.Commitments = append(bundle.Commitments, hexutil.Bytes(sidecar.Commitments[j][:]))
+			bundle.Proofs = append(bundle.Proofs, hexutil.Bytes(sidecar.Proofs[j][:]))
+		}
+	}
+	return &ExecutionPayloadEnvelope{ExecutionPayload: data, BlockValue: fees, BlobsBundle: &bundle}
 }
 
 // ExecutionPayloadBodyV1 is used in the response to GetPayloadBodiesByHashV1 and GetPayloadBodiesByRangeV1

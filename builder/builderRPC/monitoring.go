@@ -22,11 +22,11 @@ func (builderRPC *BuilderRPCService) cleanOldTransactions(ctx context.Context) {
 		// case err := <-subscription.Err():
 		case <-headEventCh:
 
-			currentTime := time.Now().Add(-24 * time.Hour)
+			deletePast := time.Now().Add(-24 * time.Hour)
 
-			log.Info("Cleaning old rpc transactions", "timeCutoff", currentTime)
+			log.Info("Cleaning old rpc transactions", "timeCutoff", deletePast)
 
-			txHashes, err := builderRPC.getTxsOlderThanTimestamp(currentTime.Unix())
+			txHashes, err := builderRPC.getTxsOlderThanTimestamp(deletePast.Unix())
 			if err != nil {
 				log.Error("Error getting txs older than 24 hours", "err", err)
 				continue
@@ -36,13 +36,22 @@ func (builderRPC *BuilderRPCService) cleanOldTransactions(ctx context.Context) {
 				continue
 			}
 
-			err = builderRPC.cancelPrivateTransactions(txHashes)
+			removedHashes, err := builderRPC.mustCancelPrivateTransactions(txHashes)
 			if err != nil {
 				log.Error("Error cancelling private transactions", "err", err)
+				// Error would only throw im txpool not available
 				continue
 			}
 
-			err = builderRPC.deleteTxsOlderThanTimestamp(currentTime.Unix())
+			log.Info("Cancelled old rpc transactions",
+				"cancelled", len(removedHashes),
+				"total", len(txHashes),
+			)
+
+			// Even if there are any old transactions the could not be cancelled, we still delete them from the db
+			// as we cannot track and manage them anymore
+			// e.g blob transactions finalized, legacy transactions synced in pending, etc...
+			err = builderRPC.deleteTxsOlderThanTimestamp(deletePast.Unix())
 			if err != nil {
 				log.Error("Error deleting txs older than 24 hours", "err", err)
 				continue

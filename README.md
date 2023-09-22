@@ -1,4 +1,4 @@
-## PoN Builder
+# PoN Builder
 
 PoN (Proof-of-Neutrality) Builder is a blockchain service built on top of the Go Ethereum implementation of the Ethereum protocol.
 
@@ -187,7 +187,7 @@ This endpoint is used to check the status of the builder service.
 
 Endpoint: `POST /eth/v1/builder/submit_block_bid`
 
-This endpoint is used to submit a block bid to the builder service which bulds a block and submits the block bid to the relay. The request body should be a JSON object containing the following fields:
+This endpoint is used to submit a block bid to the builder service which builds a block and submits the block bid to the relay. The request body should be a JSON object containing the following fields:
 
 * `slot`: the block slot for the bid (optional, if not provided the builder will use the current slot)
 * `bidAmount`: the bid amount in wei (required)
@@ -202,7 +202,7 @@ Sample scripts are provided within `scripts/` to generate and submit block bids.
 
 Endpoint: `POST /eth/v1/builder/submit_block_bounty_bid`
 
-This endpoint is used to submit a block bid to the builder service which bulds a block and submits the block bid to the relay. The request body should be a JSON object containing the following fields:
+This endpoint is used to submit a bounty block bid to the builder service which builds a block and submits the bounty block bid to the relay. The request body should be a JSON object containing the following fields:
 
 * `slot`: the block slot for the bid (required)
 * `bidAmount`: the bid amount in wei (required)
@@ -477,7 +477,10 @@ Successful responses:
     "jsonrpc": "2.0",
     "id": 1,
     "result": [
-      "0x123...", // transaction hash
+        { 
+            "hash": "0x123...", // transaction hash
+            "error": "" // error message if the transaction had an error and could not be added
+        }
     ]
 }
 ```
@@ -519,7 +522,10 @@ Successful responses:
     "jsonrpc": "2.0",
     "id": 1,
     "result": [
-      "0x123...", // transaction hash
+        { 
+            "hash": "0x123...", // transaction hash
+            "error": "" // error message if the transaction had an error and could not be added
+        }
     ]
 }
 ```
@@ -619,16 +625,14 @@ Error responses:
 
 **Important notice about bundles:** Bundles are processed using the following priority rules:
 
-- **Block Number:** Earliest block numbers come first.
-- **Max Payout:** Higher total gas values are prioritized.
-- **Timestamp:** Earlier received timestamps are processed earlier.
-- **Max Timestamp:** Bundles with the earliest max timestamp are processed first.
-- **Reverting Transactions:** Fewer reverting transactions lead to higher priority.
-- **Total Transactions:** Bundles with fewer transactions are processed sooner.
+* **Block Number:** Earliest block numbers come first.
+* **Max Payout:** Higher total gas values are prioritized.
+* **Timestamp:** Earlier received timestamps are processed earlier.
+* **Max Timestamp:** Bundles with the earliest max timestamp are processed first.
+* **Reverting Transactions:** Fewer reverting transactions lead to higher priority.
+* **Total Transactions:** Bundles with fewer transactions are processed sooner.
 
 The algorithm proceeds to the next priority only if the current priority is a tie.
-
-
 
 ### Other Geth RPC Calls
 

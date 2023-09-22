@@ -2,6 +2,7 @@ package beaconClient
 
 import (
 	"fmt"
+	"strings"
 
 	beaconData "github.com/ethereum/go-ethereum/builder/beacon/data"
 
@@ -94,4 +95,66 @@ func (b *beaconClient) GetBlockHeader(slot uint64) (*beaconTypes.BlockHeaderData
 	}
 
 	return resp.Data, err
+}
+
+func (b *beaconClient) GetForkVersion(slot uint64, head bool) (forkName string, forkVersion string, err error) {
+
+	type NodeSpec struct {
+		Data map[string]string`json:"data"`
+	}
+
+	type CurrentForkData struct {
+		PreviousVersion string `json:"previous_version"`
+		CurrentVersion string `json:"current_version"`
+		Epoch string `json:"epoch"`
+	}
+
+	type CurrentFork struct {
+		ExecutionOptimistic bool `json:"execution_optimistic"`
+		Finalized bool `json:"finalized"`
+		Data CurrentForkData `json:"data"`
+	}
+
+	
+	knownSpecs := make(map[string]string)
+
+	u := *b.beaconEndpoint
+
+
+	u.Path = "/eth/v1/config/spec"
+	specResp := new(NodeSpec)
+	err = b.fetchBeacon(&u, &specResp)
+	if err != nil {
+		return "", "", err
+	}
+
+
+	for k, v := range specResp.Data {
+		if strings.Contains(k, "_FORK_VERSION") {
+			
+			k = strings.Replace(k, "_FORK_VERSION", "", 1)
+			k = strings.ToLower(k)
+			
+			knownSpecs[v] = k
+		}
+	}
+
+	if head {
+		u.Path = "/eth/v1/beacon/states/head/fork"
+	} else {
+		u.Path = fmt.Sprintf("/eth/v2/beacon/states/%d/fork", slot)
+	}
+	currForkResp := new(CurrentFork)
+	err = b.fetchBeacon(&u, &currForkResp)
+	if err != nil {
+		return "", "", err
+	}
+
+	currentForkVersion := currForkResp.Data.CurrentVersion
+	currentForkName, ok := knownSpecs[currentForkVersion]
+	if !ok {
+		return "", "", fmt.Errorf("unknown fork version %s", currentForkVersion)
+	}
+
+	return currentForkName, currentForkVersion, err
 }

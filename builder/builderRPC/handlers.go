@@ -16,7 +16,7 @@ import (
 
 
 // Publicly exposed rpc methods
-func (builderRPC *BuilderRPCService) SendPrivateTransaction(txs rpcTypes.JSONrpcPrivateTxs) ([]string, error) {
+func (builderRPC *BuilderRPCService) SendPrivateTransaction(txs rpcTypes.JSONrpcPrivateTxs) ([]txAdditionResponse, error) {
 	// `mev_sendPrivateTransaction` is a public method that allows users to send private transactions to the tx pool.
 
 	var txsBytes [][]byte
@@ -34,16 +34,16 @@ func (builderRPC *BuilderRPCService) SendPrivateTransaction(txs rpcTypes.JSONrpc
 	}
 
 	// Use central internal function for adding private transactions to the tx pool
-	transactionHashes, err := builderRPC.addPrivateTransactions(transactions)
+	result, err := builderRPC.addPrivateTransactions(transactions)
 	if err != nil {
 		return nil, err
 	}
 
-	return transactionHashes, nil
+	return result, nil
 }
 
 
-func (builderRPC *BuilderRPCService) SendPrivateRawTransaction(txs rpcTypes.JSONrpcPrivateRawTxs) ([]string, error) {
+func (builderRPC *BuilderRPCService) SendPrivateRawTransaction(txs rpcTypes.JSONrpcPrivateRawTxs) ([]txAdditionResponse, error) {
 	// `mev_sendPrivateRawTransaction` is a public rpc method that allows users to send private raw transactions to the tx pool.
 
 	var txsBytes [][]byte
@@ -61,12 +61,12 @@ func (builderRPC *BuilderRPCService) SendPrivateRawTransaction(txs rpcTypes.JSON
 	}
 
 	// Use central internal function for adding private transactions to the tx pool
-	transactionHashes, err := builderRPC.addPrivateTransactions(transactions)
+	result, err := builderRPC.addPrivateTransactions(transactions)
 	if err != nil {
 		return nil, err
 	}
 
-	return transactionHashes, nil
+	return result, nil
 }
 
 

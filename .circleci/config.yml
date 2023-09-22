@@ -1,0 +1,26 @@
+version: 2.1
+orbs:
+  go: circleci/go@1.7.3
+
+jobs:
+  build_and_test: # this can be any name you choose
+    executor:
+      name: go/default # Use the default executor from the orb
+      tag: '1.21.0' # Specify a version tag
+    steps:
+      - checkout # checkout source code
+      - go/load-cache # Load cached Go modules.
+      - go/mod-download # Run 'go mod download'.
+      - go/save-cache # Save Go modules to cache.
+      - run:
+          name: Build
+          command: make geth
+      - persist_to_workspace:
+          root: ~/project
+          paths: .
+
+
+workflows:
+  test_my_app:
+    jobs:
+      - build_and_test

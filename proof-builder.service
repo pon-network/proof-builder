@@ -1,0 +1,12 @@
+[Unit]
+Description=Proof Builder Service
+
+[Service]
+Type=simple
+ExecStart= proof-builder.sh >> proof-builder.log 2>&1
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -13,7 +13,6 @@ func NewBeaconClient(endpoint string) (*beaconClient, error) {
 		Initializes a new beacon client
 	*/
 	u, err := url.Parse(endpoint)
-
 	bc := &beaconClient{
 		beaconEndpoint: u,
 	}

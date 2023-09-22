@@ -3,16 +3,13 @@ package builder
 import (
 	"net/http"
 
-	capellaApi "github.com/attestantio/go-eth2-client/api/v1/capella"
-	capella "github.com/attestantio/go-eth2-client/spec/capella"
-	"github.com/attestantio/go-eth2-client/spec/phase0"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/eth"
 
 	builderTypes "github.com/bsn-eng/pon-golang-types/builder"
+	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 	"github.com/ethereum/go-ethereum/miner"
 )
 
@@ -31,12 +28,12 @@ type IBuilder interface {
 	handleIndex(w http.ResponseWriter, req *http.Request)
 	ProcessBuilderBid(attrs *builderTypes.BuilderPayloadAttributes) ([]builderTypes.BlockBidResponse, error)
 	ProcessBuilderBountyBid(attrs *builderTypes.BuilderPayloadAttributes) ([]builderTypes.BlockBidResponse, error)
-	SubmitBlindedBlock(capellaApi.BlindedBeaconBlock, phase0.BLSSignature) (capella.ExecutionPayload, error)
+	SubmitBlindedBlock(commonTypes.VersionedSignedBlindedBeaconBlock) (commonTypes.VersionedExecutionPayload, error)
 	Start() error
 }
 
 type IEthService interface {
-	BuildBlock(attrs *builderTypes.BuilderPayloadAttributes, sealedBlockCallback miner.SealedBlockCallbackFn) error
+	BuildBlock(attrs *builderTypes.BuilderPayloadAttributes, bountyBlock bool, sealedBlockCallback miner.SealedBlockCallbackFn) error
 	Synced() bool
 	GetTxPool() *txpool.TxPool
 	GetBlockChain() *core.BlockChain

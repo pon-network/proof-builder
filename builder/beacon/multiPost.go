@@ -7,13 +7,15 @@ import (
 	"sync"
 	"time"
 
-	capella "github.com/attestantio/go-eth2-client/spec/capella"
+	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 
 	"github.com/ethereum/go-ethereum/builder/database"
 	"github.com/ethereum/go-ethereum/log"
 )
 
-func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.SignedBeaconBlock, metricsEnabled bool, db *database.DatabaseService) (err error) {
+type BundleAddedCallbackFn func(blockHash string)
+
+func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block commonTypes.VersionedSignedBeaconBlock, metricsEnabled bool, db *database.DatabaseService, bundlesEnabled bool, bundlesProcessAddedBlock BundleAddedCallbackFn) (err error) {
 	/*
 		Post a block to beacon chain using all clients
 		No penalty for multiple submissions
@@ -49,6 +51,12 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.Sign
 					log.Info("Successfully submitted block to beacon chain", "successes", successfulCount, "failures", len(b.Clients)-successfulCount)
 					err = nil
 
+					// Unpack the versioned signed beacon block from its available version into a base signed beacon block for access
+					baseSignedBeaconBlock, err := block.ToBaseSignedBeaconBlock()
+					if err != nil {
+						log.Warn("failed to unpack versioned signed beacon block", "err", err)
+					}
+
 					if metricsEnabled {
 						// There was at least one successful submission, don't record an error
 						submissionErr := sql.NullString{
@@ -58,12 +66,21 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.Sign
 
 						signedBeaconBlock := database.SignedBeaconBlockSubmissionEntry{
 							InsertedAt:        time.Now(),
-							Signature:         block.Signature.String(),
-							SignedBeaconBlock: block.Message.String(),
+							Signature:         baseSignedBeaconBlock.Signature.String(),
+							SignedBeaconBlock: block.String(),
 							SubmittedToChain:  true,
 							SubmissionError:   submissionErr,
 						}
-						go db.InsertBeaconBlock(signedBeaconBlock, block.Message.Body.ExecutionPayload.BlockHash.String())
+						go db.InsertBeaconBlock(signedBeaconBlock, baseSignedBeaconBlock.Message.Body.ExecutionPayload.BlockHash.String())
+					}
+
+					if bundlesEnabled {
+						// If bundles are enabled, we need to update the bundles to reflect the bundles that were included in the block
+						// This is because the block builder will not know which bundles were included in the block
+						// and will not be able to update the bundles itself
+
+						go bundlesProcessAddedBlock(baseSignedBeaconBlock.Message.Body.ExecutionPayload.BlockHash.String())
+				
 					}
 
 					return err
@@ -84,6 +101,12 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.Sign
 						err = nil
 					}
 
+					// Unpack the versioned signed beacon block from its available version into a base signed beacon block for access
+					baseSignedBeaconBlock, err := block.ToBaseSignedBeaconBlock()
+					if err != nil {
+						log.Warn("failed to unpack versioned signed beacon block", "err", err)
+					}
+
 					if metricsEnabled {
 						var submissionErr sql.NullString
 						if err == nil && successfulCount > 0 {
@@ -101,12 +124,20 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.Sign
 
 						signedBeaconBlock := database.SignedBeaconBlockSubmissionEntry{
 							InsertedAt:        time.Now(),
-							Signature:         block.Signature.String(),
-							SignedBeaconBlock: block.Message.String(),
-							SubmittedToChain:  successfulCount > 0,
+							Signature:         baseSignedBeaconBlock.Signature.String(),
+							SignedBeaconBlock: block.String(),
+							SubmittedToChain:  (err == nil && successfulCount > 0),
 							SubmissionError:   submissionErr,
 						}
-						go db.InsertBeaconBlock(signedBeaconBlock, block.Message.Body.ExecutionPayload.BlockHash.String())
+						go db.InsertBeaconBlock(signedBeaconBlock, baseSignedBeaconBlock.Message.Body.ExecutionPayload.BlockHash.String())
+					}
+
+					if bundlesEnabled {
+						// If bundles are enabled, we need to update the bundles to reflect the bundles that were included in the block
+						// This is because the block builder will not know which bundles were included in the block
+						// and will not be able to update the bundles itself
+				
+						go bundlesProcessAddedBlock(baseSignedBeaconBlock.Message.Body.ExecutionPayload.BlockHash.String())
 					}
 
 					return err
@@ -116,7 +147,7 @@ func (b *MultiBeaconClient) PublishBlock(ctx context.Context, block capella.Sign
 	}
 }
 
-func publishAsync(ctx context.Context, clientUpdate *sync.Mutex, client BeaconClient, block capella.SignedBeaconBlock, submissionError chan<- error) {
+func publishAsync(ctx context.Context, clientUpdate *sync.Mutex, client BeaconClient, block commonTypes.VersionedSignedBeaconBlock, submissionError chan<- error) {
 
 	err := client.Node.PublishBlock(ctx, block)
 	if err != nil {

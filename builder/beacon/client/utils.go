@@ -80,7 +80,7 @@ func (b *beaconClient) postBeacon(u *url.URL, src any) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("fail to post request: %w", err)
+		return fmt.Errorf("failed to post request: %w", err)
 	}
 
 	if resp.StatusCode >= 300 {
@@ -90,11 +90,11 @@ func (b *beaconClient) postBeacon(u *url.URL, src any) error {
 		}{}
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return fmt.Errorf("fail to read error response body: %w", err)
+			return fmt.Errorf("failed to read error response body: %w", err)
 		}
 
 		if err = json.Unmarshal(bodyBytes, ec); err != nil {
-			return fmt.Errorf("fail to unmarshal error response: %w", err)
+			return fmt.Errorf("failed to unmarshal error response: %w", err)
 		}
 		return fmt.Errorf("error response from beacon node for %s: %s", u, ec.Message)
 	}

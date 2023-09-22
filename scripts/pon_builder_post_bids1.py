@@ -41,6 +41,7 @@ class BlockBidder:
         self.slot_count = 0
         self.slot_bid_amount = defaultdict(lambda: default_bid)
         self.slot_bounty_amount = defaultdict(int)
+        self.slot_highest_bid = defaultdict(int)
         self.fee_recipient = fee_recipient
         self.transactions = []
         self.no_mempool_txs = "false"
@@ -156,6 +157,16 @@ class BlockBidder:
                 print("Slot bid for: " + str(slot))
                 print("Highest bid address: " + address)
                 print("Current bid amount: " + str(bid_amount))
+
+                # If the bid amount for slot is not higher then do not
+                # attempt to outbid
+                if int(bid_amount) <= int(self.slot_bid_amount[slot]):
+                    print("\nDo not attempt to outbid")
+                    print("Current bid amount is not highest in connected bulletin boards")
+                    print("\n****************************\n")
+                    return
+
+                self.slot_bid_amount[int(slot)] = bid_amount
 
                 if str(address).strip().lower() in self.wl_bid_addresses:
                     print("\nDo not attempt to outbid")

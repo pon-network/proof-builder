@@ -2,10 +2,11 @@ package beaconClient
 
 import (
 	"context"
-	capella "github.com/attestantio/go-eth2-client/spec/capella"
+
+	commonTypes "github.com/bsn-eng/pon-golang-types/common"
 )
 
-func (b *beaconClient) PublishBlock(ctx context.Context, block capella.SignedBeaconBlock) error {
+func (b *beaconClient) PublishBlock(ctx context.Context, block commonTypes.VersionedSignedBeaconBlock) error {
 	// Publish a block to the beacon chain
 	u := *b.beaconEndpoint
 	u.Path = "/eth/v1/beacon/blocks"

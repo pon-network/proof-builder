@@ -164,3 +164,33 @@ func (b *MultiBeaconClient) GetBlockHeader(slot uint64) (blockHeader *beaconType
 
 	return nil, err
 }
+
+func (b *MultiBeaconClient) GetForkVersion(slot uint64, head bool) (forkName string, forkVersion string, err error) {
+	/*
+		Get fork version of chain.
+		If any client fails, try the next one.
+		Clients are attempted by best performance first.
+		Performance is also updated in defer function (triggers background update).
+	*/
+	defer b.postBeaconCall()
+	for _, client := range b.Clients {
+
+		if forkName, forkVersion, err = client.Node.GetForkVersion(slot, head); err != nil {
+			log.Warn("failed to get fork version", "err", err, "endpoint", client.Node.BaseEndpoint())
+			b.clientUpdate.Lock()
+			client.LastResponseStatus = 500
+			client.LastUsedTime = time.Now()
+			b.clientUpdate.Unlock()
+			continue
+		}
+
+		b.clientUpdate.Lock()
+		client.LastResponseStatus = 200
+		client.LastUsedTime = time.Now()
+		b.clientUpdate.Unlock()
+
+		return forkName, forkVersion, nil
+	}
+
+	return "", "", err
+}
